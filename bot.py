@@ -1,9 +1,4 @@
-import os
-import logging
-import random
-import json
-import psycopg2
-import threading
+import os, logging, random, json, psycopg2, threading
 from flask import Flask
 from datetime import datetime, timedelta
 from telegram import Update
@@ -12,8 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # --- DUMMY WEB SERVER ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home():
-    return "Kitchen is Open!"
+def home(): return "Kitchen is Open!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -35,14 +29,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Apostrophe safe name handling
+    # Fixed: Handles apostrophes safely
     username = update.effective_user.username or update.effective_user.first_name or "Chef"
     now = datetime.now()
 
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # Safe check for user
     cur.execute("SELECT total_calories, last_snack FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
@@ -56,23 +48,21 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     food_item = random.choice(foods)
     current_calories = user[0] if user and user[0] is not None else 0
-    new_total = current_calories + food_item['calories']
+    new_total = max(0, current_calories + food_item['calories']) # Prevents negative calories
     
-    # PARAMETERIZED QUERY: This is the specific fix for the ' in his name
-    sql = '''
+    # Safe SQL for names with quotes
+    cur.execute('''
         INSERT INTO pf_users (user_id, username, total_calories, last_snack)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE SET
             username = EXCLUDED.username,
             total_calories = EXCLUDED.total_calories,
             last_snack = EXCLUDED.last_snack
-    '''
-    cur.execute(sql, (user_id, username, new_total, now))
+    ''', (user_id, username, new_total, now))
     
     conn.commit()
     cur.close()
     conn.close()
-    
     await update.message.reply_text(f"🍔 {food_item['name']} (+{food_item['calories']} kcal)\n📈 Total: {new_total:,} kcal")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,16 +72,24 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    
     if not rows:
-        await update.message.reply_text("The kitchen is empty!")
+        await update.message.reply_text("Kitchen is empty!")
         return
-    
     text = "🏆 THE PHATTEST 🏆\n\n"
     for i, r in enumerate(rows):
-        # Plain text name to prevent Markdown parsing errors
         text += f"{i+1}. {r[0]}: {r[1]:,} kcal\n"
     await update.message.reply_text(text)
+
+# OWNER ONLY: Reset command to fix your -400 score
+async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE pf_users SET total_calories = 0 WHERE user_id = %s", (user_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    await update.message.reply_text("✅ Your calories have been reset to 0. Happy snacking!")
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
@@ -99,4 +97,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
-    app.run_polling()
+    app.add_handler(CommandHandler("reset_me", reset_me))
+    app.run_polling(drop_pending_updates=True) # Forces conflict to clear
