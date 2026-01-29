@@ -29,7 +29,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Fixed: Handles apostrophes in names
+    # Parameterized to handle apostrophes in names
     username = update.effective_user.username or update.effective_user.first_name or "Chef"
     now = datetime.now()
 
@@ -41,7 +41,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user and user[1] and now - user[1] < timedelta(hours=24):
         remaining = timedelta(hours=24) - (now - user[1])
         hours = int(remaining.total_seconds() // 3600)
-        # Hourglass emoji kept for wait time
+        # ⌛️ Emoji restored for digestion message
         await update.message.reply_text(f"⌛️ Still digesting. Try again in {hours} hours.")
         cur.close()
         conn.close()
@@ -51,7 +51,6 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_calories = user[0] if user and user[0] is not None else 0
     new_total = current_calories + food_item['calories']
     
-    # Safe SQL for names with special characters
     cur.execute('''
         INSERT INTO pf_users (user_id, username, total_calories, last_snack)
         VALUES (%s, %s, %s, %s)
@@ -65,7 +64,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
 
-    # Clean text-only item name, chart emoji for total
+    # Cheeseburger removed. 📈 Emoji restored for progress
     await update.message.reply_text(
         f"Item: {food_item['name']} ({food_item['calories']:+d} kcal)\n"
         f"📈 Total: {new_total:,} kcal"
@@ -81,13 +80,13 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("Kitchen is empty!")
         return
-    # Trophy emoji kept for competition
+    # 🏆 Emojis restored for the leaderboard title
     text = "🏆 THE PHATTEST 🏆\n\n"
     for i, r in enumerate(rows):
         text += f"{i+1}. {r[0]}: {r[1]:,} kcal\n"
     await update.message.reply_text(text)
 
-# OWNER ONLY: Reset command
+# OWNER ONLY: Reset command to fix scores
 async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection()
@@ -105,5 +104,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("reset_me", reset_me))
-    # drop_pending_updates prevents conflicts on restart
+    # Clears old messages and helps resolve conflicts on startup
     app.run_polling(drop_pending_updates=True)
