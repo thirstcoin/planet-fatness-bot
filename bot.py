@@ -57,7 +57,6 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or update.effective_user.first_name or "Chef"
     now = datetime.now()
 
-    # Track rank BEFORE eating
     old_rank = get_user_rank(user_id)
 
     conn = get_db_connection()
@@ -65,7 +64,6 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT total_calories, last_snack FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
-    # UPDATED: 6 Hour Cooldown (instead of 24)
     if user and user[1] and now - user[1] < timedelta(hours=6):
         remaining = timedelta(hours=6) - (now - user[1])
         hours = int(remaining.total_seconds() // 3600)
@@ -92,19 +90,18 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
 
-    # Check rank AFTER eating
     new_rank = get_user_rank(user_id)
     vibe_msg = ""
     if old_rank and new_rank and new_rank < old_rank:
         vibe_msg = f"\n\n📈 **RANK UP!** You just snatched the #{new_rank} spot!"
 
-    # Spotify Button Integration
     keyboard = [[InlineKeyboardButton("🎧 Burn it off: Gym Playlist", url=SPOTIFY_URL)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # UPDATED: kcal -> Cal
     await update.message.reply_text(
-        f"Item: {food_item['name']} ({food_item['calories']:+d} kcal)\n"
-        f"📈 Total: {new_total:,} kcal{vibe_msg}",
+        f"Item: {food_item['name']} ({food_item['calories']:+d} Cal)\n"
+        f"📈 Total: {new_total:,} Cal{vibe_msg}",
         reply_markup=reply_markup
     )
 
@@ -120,10 +117,10 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = "🏆 THE PHATTEST 🏆\n\n"
     for i, r in enumerate(rows):
-        text += f"{i+1}. {r[0]}: {r[1]:,} kcal\n"
+        # UPDATED: kcal -> Cal
+        text += f"{i+1}. {r[0]}: {r[1]:,} Cal\n"
     await update.message.reply_text(text)
 
-# Security: Reset Me works for anyone's own score
 async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection()
@@ -134,7 +131,6 @@ async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     await update.message.reply_text("✅ Your calories have been reset to 0.")
 
-# Security: Admin Wipe works ONLY for your username
 async def wipe_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.username != "Degen_Eeyore":
         await update.message.reply_text("🚫 Admin only.")
@@ -148,12 +144,12 @@ async def wipe_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧹 DATABASE WIPED. The kitchen is fresh for launch!")
 
 if __name__ == '__main__':
-    init_db() # Added to prepare database safely
+    init_db()
     threading.Thread(target=run_flask, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("reset_me", reset_me))
-    app.add_handler(CommandHandler("wipe_everything", wipe_everything)) # Added handler
+    app.add_handler(CommandHandler("wipe_everything", wipe_everything))
     app.run_polling(drop_pending_updates=True)
