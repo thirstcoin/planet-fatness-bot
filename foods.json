@@ -312,7 +312,7 @@
   {"name": "Double Cheeseburger w/ Bacon", "calories": 950, "tier": "Uncommon", "category": "MEAL"},
   {"name": "Large Vanilla Milkshake", "calories": 1100, "tier": "Rare", "category": "DRINK"},
   {"name": "Handful of Walnuts", "calories": 180, "tier": "Common", "category": "SNACK"},
-  {"name": "Forgot to Eat Breakfast Again", "calories": -450, "tier": "Punishment", "category": "GYM_FAIL"}
+  {"name": "Forgot to Eat Breakfast Again", "calories": -450, "tier": "Punishment", "category": "GYM_FAIL"},
   {"name": "All-Night Simp-a-thon (Tier 3 Sub)", "calories": -850, "tier": "Punishment", "category": "GYM_FAIL"},
   {"name": "Intense Shag Session (Cardio)", "calories": -400, "tier": "Common", "category": "GYM_FAIL"},
   {"name": "Post-Shag 'Was that it?' Shame", "calories": -150, "tier": "Punishment", "category": "GYM_FAIL"},
@@ -339,5 +339,3 @@
   {"name": "Buying a Round for the Table (No BJ)", "calories": -900, "tier": "Mythic", "category": "GYM_FAIL"},
   {"name": "Running from her Boyfriend", "calories": -1200, "tier": "Legendary", "category": "GYM_FAIL"}
 ]
-
-
