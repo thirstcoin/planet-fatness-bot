@@ -50,7 +50,8 @@ def get_user_rank(user_id):
     return result[0] if result else None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to the Judgment Free Kitchen! 🍔\nType /snack to eat (3h cooldown).")
+    # UPDATED: Changed message to reflect 1h cooldown
+    await update.message.reply_text("Welcome to the Judgment Free Kitchen! 🍔\nType /snack to eat (1h cooldown).")
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -62,12 +63,12 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT total_calories, last_snack, daily_calories FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
-    # 1. 3-Hour Cooldown Check
-    if user and user[1] and now - user[1] < timedelta(hours=3):
-        remaining = timedelta(hours=3) - (now - user[1])
-        hours = int(remaining.total_seconds() // 3600)
-        minutes = int((remaining.total_seconds() % 3600) // 60)
-        await update.message.reply_text(f"⌛️ Still digesting. Try again in {hours}h {minutes}m.")
+    # --- 1 HOUR COOLDOWN CHECK ---
+    if user and user[1] and now - user[1] < timedelta(hours=1):
+        remaining = timedelta(hours=1) - (now - user[1])
+        minutes = int(remaining.total_seconds() // 60)
+        seconds = int(remaining.total_seconds() % 60)
+        await update.message.reply_text(f"⌛️ Still digesting. Try again in {minutes}m {seconds}s.")
         cur.close()
         conn.close()
         return
