@@ -25,16 +25,16 @@ with open('foods.json', 'r') as f:
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, sslmode='require')
 
-# New: This adds the necessary 'last_rank' column to your DB without touching your data
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
+    # Added daily_calories column for rewards
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS last_rank INTEGER;")
+    cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS daily_calories INTEGER DEFAULT 0;")
     conn.commit()
     cur.close()
     conn.close()
 
-# New: Helper for the Vibe Bot chatter
 def get_user_rank(user_id):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -50,7 +50,7 @@ def get_user_rank(user_id):
     return result[0] if result else None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to the Judgment Free Kitchen! Type /snack to eat.")
+    await update.message.reply_text("Welcome to the Judgment Free Kitchen! 🍔\nNow with 3h cooldowns! Type /snack to eat.")
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -61,10 +61,10 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT total_calories, last_snack FROM pf_users WHERE user_id = %s", (user_id,))
+    cur.execute("SELECT total_calories, last_snack, daily_calories FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
-    # UPDATED: Changed timedelta from 6 hours to 3 hours
+    # 3-Hour Cooldown Logic
     if user and user[1] and now - user[1] < timedelta(hours=3):
         remaining = timedelta(hours=3) - (now - user[1])
         hours = int(remaining.total_seconds() // 3600)
@@ -75,35 +75,42 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     food_item = random.choice(foods)
-    current_calories = user[0] if user and user[0] is not None else 0
-    new_total = current_calories + food_item['calories']
+    
+    # Logic to reset daily calories if the last snack was on a different day
+    current_total = user[0] if user and user[0] is not None else 0
+    current_daily = user[2] if user and user[2] is not None else 0
+    
+    # If it's a new day, reset their daily count
+    if user and user[1] and user[1].date() < now.date():
+        current_daily = 0
+
+    new_total = current_total + food_item['calories']
+    new_daily = current_daily + food_item['calories']
     
     cur.execute('''
-        INSERT INTO pf_users (user_id, username, total_calories, last_snack)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack)
+        VALUES (%s, %s, %s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE SET
             username = EXCLUDED.username,
             total_calories = EXCLUDED.total_calories,
+            daily_calories = EXCLUDED.daily_calories,
             last_snack = EXCLUDED.last_snack
-    ''', (user_id, username, new_total, now))
+    ''', (user_id, username, new_total, new_daily, now))
     
     conn.commit()
     cur.close()
     conn.close()
 
     new_rank = get_user_rank(user_id)
-    vibe_msg = ""
+    vibe_msg = f"\n🔥 Daily Gain: +{food_item['calories']} Cal"
     if old_rank and new_rank and new_rank < old_rank:
-        vibe_msg = f"\n\n📈 **RANK UP!** You just snatched the #{new_rank} spot!"
+        vibe_msg += f"\n📈 **RANK UP!** You hit #{new_rank} all-time!"
 
     keyboard = [[InlineKeyboardButton("🎧 Burn it off: Gym Playlist", url=SPOTIFY_URL)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # UPDATED: kcal -> Cal
     await update.message.reply_text(
         f"Item: {food_item['name']} ({food_item['calories']:+d} Cal)\n"
-        f"📈 Total: {new_total:,} Cal{vibe_msg}",
-        reply_markup=reply_markup
+        f"📈 All-Time: {new_total:,} Cal{vibe_msg}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,36 +120,28 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    if not rows:
-        await update.message.reply_text("Kitchen is empty!")
-        return
-    text = "🏆 THE PHATTEST 🏆\n\n"
-    for i, r in enumerate(rows):
-        # UPDATED: kcal -> Cal
-        text += f"{i+1}. {r[0]}: {r[1]:,} Cal\n"
-    await update.message.reply_text(text)
+    text = "🏆 ALL-TIME PHATTEST 🏆\n\n" + "\n".join([f"{i+1}. {r[0]}: {r[1]:,} Cal" for i, r in enumerate(rows)])
+    await update.message.reply_text(text if rows else "Kitchen is empty!")
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Only show users who ate today
+    cur.execute("SELECT username, daily_calories FROM pf_users WHERE last_snack::date = CURRENT_DATE ORDER BY daily_calories DESC LIMIT 10")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    text = "🔥 TODAY'S BIGGEST MUNCHERS 🔥\n\n" + "\n".join([f"{i+1}. {r[0]}: {r[1]:,} Cal" for i, r in enumerate(rows)])
+    await update.message.reply_text(text if rows else "No one has eaten today!")
 
 async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE pf_users SET total_calories = 0 WHERE user_id = %s", (user_id,))
+    cur.execute("UPDATE pf_users SET total_calories = 0, daily_calories = 0 WHERE user_id = %s", (update.effective_user.id,))
     conn.commit()
     cur.close()
     conn.close()
-    await update.message.reply_text("✅ Your calories have been reset to 0.")
-
-async def wipe_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != "Degen_Eeyore":
-        await update.message.reply_text("🚫 Admin only.")
-        return
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM pf_users") 
-    conn.commit()
-    cur.close()
-    conn.close()
-    await update.message.reply_text("🧹 DATABASE WIPED. The kitchen is fresh for launch!")
+    await update.message.reply_text("✅ Calories reset.")
 
 if __name__ == '__main__':
     init_db()
@@ -151,6 +150,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CommandHandler("reset_me", reset_me))
-    app.add_handler(CommandHandler("wipe_everything", wipe_everything))
     app.run_polling(drop_pending_updates=True)
