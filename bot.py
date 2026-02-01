@@ -64,8 +64,9 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT total_calories, last_snack FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone()
 
-    if user and user[1] and now - user[1] < timedelta(hours=6):
-        remaining = timedelta(hours=6) - (now - user[1])
+    # UPDATED: Changed timedelta from 6 hours to 3 hours
+    if user and user[1] and now - user[1] < timedelta(hours=3):
+        remaining = timedelta(hours=3) - (now - user[1])
         hours = int(remaining.total_seconds() // 3600)
         minutes = int((remaining.total_seconds() % 3600) // 60)
         await update.message.reply_text(f"⌛️ Still digesting. Try again in {hours}h {minutes}m.")
