@@ -5,10 +5,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from engine import BulkinatorEngine
 
-# --- DUMMY WEB SERVER (Keep Render alive) ---
+# --- WEB SERVER (For Render Health Checks) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bulkinator Arena is Online!"
+def home(): return "Bulkinator Arena: Global Defense System ONLINE"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -33,17 +33,34 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS last_rank INTEGER;")
+    # Ensure standard user columns exist
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS daily_calories INTEGER DEFAULT 0;")
+    # Create Global Stats table for tracking "Supply Burn"
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pf_stats (
+            stat_name TEXT PRIMARY KEY,
+            stat_value BIGINT DEFAULT 0
+        );
+    """)
+    cur.execute("INSERT INTO pf_stats (stat_name, stat_value) VALUES ('total_burned', 0) ON CONFLICT DO NOTHING;")
     conn.commit()
     cur.close()
     conn.close()
+
+def log_burn_to_db():
+    """Increments the global burn counter and returns the new total."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE pf_stats SET stat_value = stat_value + %s WHERE stat_name = 'total_burned' RETURNING stat_value;", (BURN_AMOUNT,))
+    new_total = cur.fetchone()[0]
+    conn.commit()
+    cur.close(); conn.close()
+    return new_total
 
 def update_user_calories(user_id, username, cal_gain):
     conn = get_db_connection()
     cur = conn.cursor()
     now = datetime.now()
-    
     cur.execute('''
         INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack)
         VALUES (%s, %s, %s, %s, %s)
@@ -57,40 +74,51 @@ def update_user_calories(user_id, username, cal_gain):
             last_snack = EXCLUDED.last_snack
         RETURNING total_calories, daily_calories;
     ''', (user_id, username, cal_gain, cal_gain, now))
-    
     res = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
+    conn.commit(); cur.close(); conn.close()
     return res
+
+# --- UI HELPERS ---
+def get_progress_bar(current, total):
+    """Generates a visual 'Terminator' style progress bar."""
+    ratio = current / total
+    filled = int(ratio * 10)
+    bar = "⣿" * filled + "░" * (10 - filled)
+    return f"[{bar}] {int(ratio * 100)}%"
 
 # --- BULKINATOR CORE ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Thematic welcome message for the Bulkinator."""
     welcome_text = (
         "🤖 **THE BULKINATOR T-800 HAS ARRIVED.**\n\n"
         "🍔 *'Come with me if you want to snack.'*\n\n"
-        "Target acquired. I am programmed to facilitate maximum mass. "
-        "I will drop random ambushes in the group. Stay active, eat fast, "
-        "and do not let the supply burn. 🔥"
+        "Target acquired. Programming mass accumulation protocols. "
+        "Stay active, eat fast, and do not let the supply burn. 🔥"
     )
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
+async def burnstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View the total damage caused by failed bulks."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT stat_value FROM pf_stats WHERE stat_name = 'total_burned';")
+    total = cur.fetchone()[0]
+    cur.close(); conn.close()
+    await update.message.reply_text(f"📉 **GLOBAL INCINERATION LOG**\n\nTotal $PHAT supply burned: **{total:,}** units.\n\nThe Bulkinator does not forgive failure.")
+
 async def start_bulkinator_session(chat_id, user_id, username, context):
-    """Triggers a Bulkinator event for a specific user."""
     session = bulkinator.initialize_session(chat_id, user_id)
     cals = session['food'].get('calories', 0)
     is_boss = cals >= 3000
     
     header = "🚨🚨 **BOSS BATTLE** 🚨🚨" if is_boss else "🚨 **BULKINATOR AMBUSH** 🚨"
-    siren = "🔊 *WEE-OOO WEE-OOO WEE-OOO*\n" if is_boss else ""
+    bar = get_progress_bar(0, session['reps_needed'])
     
     text = (
-        f"{header}\n{siren}\n"
+        f"{header}\n\n"
         f"Watch out, @{username}!\n"
-        f"The Bulkinator demands you finish: \n"
-        f"👉 **{session['food']['name'].upper()}** ({cals} kcal)\n\n"
+        f"The Bulkinator demands you finish: **{session['food']['name'].upper()}** ({cals} kcal)\n\n"
+        f"Status: {bar}\n"
         f"Inhale **{session['reps_needed']} reps** in 30s or I burn the supply!"
     )
     
@@ -101,10 +129,6 @@ async def start_bulkinator_session(chat_id, user_id, username, context):
     if is_boss:
         try: await context.bot.pin_chat_message(chat_id, msg.message_id, disable_notification=False)
         except: pass
-
-async def bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual trigger command."""
-    await start_bulkinator_session(update.effective_chat.id, update.effective_user.id, update.effective_user.username, context)
 
 async def handle_interactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -119,11 +143,17 @@ async def handle_interactions(update: Update, context: ContextTypes.DEFAULT_TYPE
         totals = update_user_calories(user_id, username, state['food']['calories'])
         await query.edit_message_text(f"🏆 *GAINS SECURED*\n\n@{username} inhaled the {state['food']['name']}!\n📈 All-Time: {totals[0]:,} Cal")
     elif result == "PROGRESS":
+        bar = get_progress_bar(state['reps_current'], state['reps_needed'])
         keyboard = [[InlineKeyboardButton(f"🏋️ EAT ({state['reps_current']}/{state['reps_needed']})", callback_data="bulk_rep")],
                     [InlineKeyboardButton("📣 SHOUT (SPOTTER)", callback_data="bulk_shout")]]
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Update text with the visual progress bar
+        new_text = f"🚨 **AMBUSH IN PROGRESS**\n\nTarget: @{username}\n{bar}"
+        await query.edit_message_text(new_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        
     elif result == "BURN":
-        await query.edit_message_text(f"🔥 *INCINERATION COMMENCED*\n\nThe plate went cold. {BURN_AMOUNT} $PHAT burned.")
+        total_lost = log_burn_to_db()
+        await query.edit_message_text(f"🔥 *INCINERATION COMMENCED*\n\nThe plate went cold. {BURN_AMOUNT} $PHAT burned.\n📉 Total Lost: {total_lost:,}")
     elif result == "UNAUTHORIZED":
         await query.answer("❌ Not your plate, skinny!", show_alert=True)
 
@@ -168,8 +198,6 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔥 24H TOP MUNCHERS 🔥\n\n" + "\n".join([f"{i+1}. {r[0]}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text)
 
-# --- AUTOMATION: THE RANDOM HUNT ---
-
 async def passive_hunt_callback(context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -197,8 +225,9 @@ if __name__ == '__main__':
     # Register handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("snack", snack))
-    app.add_handler(CommandHandler("bulk", bulk))
+    app.add_handler(CommandHandler("bulk", lambda u, c: start_bulkinator_session(u.effective_chat.id, u.effective_user.id, u.effective_user.username, c)))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("burnstats", burnstats))
     app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CallbackQueryHandler(handle_interactions, pattern="^bulk_"))
     
