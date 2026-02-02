@@ -5,10 +5,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from engine import BulkinatorEngine
 
-# --- DUMMY WEB SERVER ---
+# --- DUMMY WEB SERVER (Keep Render/Railway alive) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Kitchen & Gym are Open!"
+def home(): return "Bulkinator Arena is Online!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -18,6 +18,7 @@ def run_flask():
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GROUP_CHAT_ID = -1003758442357  # Your verified Group ID
 BURN_AMOUNT = 500 
 
 with open('foods.json', 'r') as f:
@@ -39,7 +40,6 @@ def init_db():
     conn.close()
 
 def update_user_calories(user_id, username, cal_gain):
-    """Unified helper for Snack and Bulkinator gains."""
     conn = get_db_connection()
     cur = conn.cursor()
     now = datetime.now()
@@ -64,21 +64,21 @@ def update_user_calories(user_id, username, cal_gain):
     conn.close()
     return res
 
-# --- BULKINATOR LOGIC ---
-
-async def bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    await start_bulkinator_session(chat_id, user.id, user.username, context)
+# --- BULKINATOR CORE ---
 
 async def start_bulkinator_session(chat_id, user_id, username, context):
+    """Triggers a Bulkinator event for a specific user."""
     session = bulkinator.initialize_session(chat_id, user_id)
     cals = session['food'].get('calories', 0)
     is_boss = cals >= 3000
     
-    header = "🚨🚨 **BOSS BATTLE** 🚨🚨" if is_boss else "🚨 **BULKINATOR PROTOCOL** 🚨"
+    header = "🚨🚨 **BOSS BATTLE** 🚨🚨" if is_boss else "🚨 **BULKINATOR AMBUSH** 🚨"
+    siren = "🔊 *WEE-OOO WEE-OOO WEE-OOO*\n" if is_boss else ""
+    
     text = (
-        f"{header}\n\n@{username}, the Bulkinator has served: \n"
+        f"{header}\n{siren}\n"
+        f"Watch out, @{username}!\n"
+        f"The Bulkinator demands you finish: \n"
         f"👉 **{session['food']['name'].upper()}** ({cals} kcal)\n\n"
         f"Inhale **{session['reps_needed']} reps** in 30s or I burn the supply!"
     )
@@ -88,17 +88,25 @@ async def start_bulkinator_session(chat_id, user_id, username, context):
     
     msg = await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     if is_boss:
-        try: await context.bot.pin_chat_message(chat_id, msg.message_id)
+        try: await context.bot.pin_chat_message(chat_id, msg.message_id, disable_notification=False)
         except: pass
+
+async def bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual trigger command."""
+    await start_bulkinator_session(update.effective_chat.id, update.effective_user.id, update.effective_user.username, context)
 
 async def handle_interactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    result = bulkinator.process_action(query.message.chat_id, query.from_user.id, "rep" if query.data == "bulk_rep" else "shout")
-    state = bulkinator.active_bulks.get(query.message.chat_id)
+    chat_id = query.message.chat_id
+    user_id = query.from_user.id
+    username = query.from_user.username or query.from_user.first_name
+    
+    result = bulkinator.process_action(chat_id, user_id, "rep" if query.data == "bulk_rep" else "shout")
+    state = bulkinator.active_bulks.get(chat_id)
 
     if result == "SUCCESS":
-        totals = update_user_calories(query.from_user.id, query.from_user.username, state['food']['calories'])
-        await query.edit_message_text(f"🏆 *GAINS SECURED*\n\n@{query.from_user.username} inhaled the {state['food']['name']}!\n📈 All-Time: {totals[0]:,} Cal")
+        totals = update_user_calories(user_id, username, state['food']['calories'])
+        await query.edit_message_text(f"🏆 *GAINS SECURED*\n\n@{username} inhaled the {state['food']['name']}!\n📈 All-Time: {totals[0]:,} Cal")
     elif result == "PROGRESS":
         keyboard = [[InlineKeyboardButton(f"🏋️ EAT ({state['reps_current']}/{state['reps_needed']})", callback_data="bulk_rep")],
                     [InlineKeyboardButton("📣 SHOUT (SPOTTER)", callback_data="bulk_shout")]]
@@ -108,7 +116,7 @@ async def handle_interactions(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif result == "UNAUTHORIZED":
         await query.answer("❌ Not your plate, skinny!", show_alert=True)
 
-# --- SNACK & UTILITY HANDLERS ---
+# --- SNACK & LEADERBOARD HANDLERS ---
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -149,31 +157,36 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔥 24H TOP MUNCHERS 🔥\n\n" + "\n".join([f"{i+1}. {r[0]}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text)
 
-# --- AUTOMATION ---
+# --- AUTOMATION: THE RANDOM HUNT ---
+
 async def passive_hunt_callback(context: ContextTypes.DEFAULT_TYPE):
-    target_chat_id = os.getenv("GROUP_CHAT_ID")
-    if not target_chat_id: return
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, username FROM pf_users WHERE last_snack >= NOW() - INTERVAL '24 hours'")
+    # Find real humans (not bots) active in last 24h
+    cur.execute("SELECT user_id, username FROM pf_users WHERE last_snack >= NOW() - INTERVAL '24 hours' AND username NOT LIKE '%bot'")
     active_users = cur.fetchall()
+    cur.close(); conn.close()
+    
     if active_users:
         victim = random.choice(active_users)
-        await start_bulkinator_session(target_chat_id, victim[0], victim[1], context)
+        await start_bulkinator_session(GROUP_CHAT_ID, victim[0], victim[1], context)
+
+# --- MAIN RUNNER ---
 
 if __name__ == '__main__':
     init_db()
     threading.Thread(target=run_flask, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Automation: Hunt every 2-4 hours
+    # Hunt randomly every 2 to 4 hours
     app.job_queue.run_repeating(passive_hunt_callback, interval=random.randint(7200, 14400), first=10)
 
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Kitchen is Open!")))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Kitchen & Gym are Open!🍔🏋️")))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("bulk", bulk))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CallbackQueryHandler(handle_interactions, pattern="^bulk_"))
     
+    print(f"Systems check complete. Monitoring group {GROUP_CHAT_ID}...")
     app.run_polling(drop_pending_updates=True)
