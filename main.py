@@ -5,7 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 from engine import BulkinatorEngine
 
-# --- DUMMY WEB SERVER (Keep Render/Railway alive) ---
+# --- DUMMY WEB SERVER (Keep Render alive) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home(): return "Bulkinator Arena is Online!"
@@ -176,10 +176,16 @@ async def passive_hunt_callback(context: ContextTypes.DEFAULT_TYPE):
 if __name__ == '__main__':
     init_db()
     threading.Thread(target=run_flask, daemon=True).start()
+    
+    # FIX: Explicitly build application to ensure job_queue is initialized
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Hunt randomly every 2 to 4 hours
-    app.job_queue.run_repeating(passive_hunt_callback, interval=random.randint(7200, 14400), first=10)
+    # Safety Check: Ensure job_queue exists
+    if app.job_queue:
+        # Hunt randomly every 2 to 4 hours
+        app.job_queue.run_repeating(passive_hunt_callback, interval=random.randint(7200, 14400), first=10)
+    else:
+        logging.error("Job Queue could not be initialized. Background hunting is disabled.")
 
     app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Kitchen & Gym are Open!🍔🏋️")))
     app.add_handler(CommandHandler("snack", snack))
