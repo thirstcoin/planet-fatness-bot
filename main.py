@@ -66,6 +66,17 @@ def update_user_calories(user_id, username, cal_gain):
 
 # --- BULKINATOR CORE ---
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Thematic welcome message for the Bulkinator."""
+    welcome_text = (
+        "🤖 **THE BULKINATOR T-800 HAS ARRIVED.**\n\n"
+        "🍔 *'Come with me if you want to snack.'*\n\n"
+        "Target acquired. I am programmed to facilitate maximum mass. "
+        "I will drop random ambushes in the group. Stay active, eat fast, "
+        "and do not let the supply burn. 🔥"
+    )
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
 async def start_bulkinator_session(chat_id, user_id, username, context):
     """Triggers a Bulkinator event for a specific user."""
     session = bulkinator.initialize_session(chat_id, user_id)
@@ -162,7 +173,6 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def passive_hunt_callback(context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
     cur = conn.cursor()
-    # Find real humans (not bots) active in last 24h
     cur.execute("SELECT user_id, username FROM pf_users WHERE last_snack >= NOW() - INTERVAL '24 hours' AND username NOT LIKE '%bot'")
     active_users = cur.fetchall()
     cur.close(); conn.close()
@@ -177,17 +187,15 @@ if __name__ == '__main__':
     init_db()
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # FIX: Explicitly build application to ensure job_queue is initialized
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Safety Check: Ensure job_queue exists
     if app.job_queue:
-        # Hunt randomly every 2 to 4 hours
         app.job_queue.run_repeating(passive_hunt_callback, interval=random.randint(7200, 14400), first=10)
     else:
-        logging.error("Job Queue could not be initialized. Background hunting is disabled.")
+        logging.error("Job Queue could not be initialized.")
 
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Kitchen & Gym are Open!🍔🏋️")))
+    # Register handlers
+    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("bulk", bulk))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
