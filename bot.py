@@ -116,6 +116,8 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     h = random.choice(hacks)
     gain = random.randint(h['min_clog'], h['max_clog'])
     new_c = clog + gain
+    # Extraction of the franchise for display
+    establishment = h.get('franchise', 'Secret Menu').upper()
 
     if new_c >= 100:
         roasts = [
@@ -129,7 +131,13 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         adren = random.random() < 0.10
         save_t = now - timedelta(hours=2) if adren else now
         cur.execute("UPDATE pf_users SET daily_clog=%s, is_icu=False, last_hack=%s, ping_sent=False WHERE user_id=%s", (new_c, save_t, user_id))
-        msg = f"🩺 **HACK SUCCESS: {h['name']}**\n📋 {h['blueprint']}\n📈 Artery Clog: {new_c}% (+{gain}%)"
+        
+        msg = (
+            f"🩺 **HACK SUCCESS: {h['name']}**\n"
+            f"📍 *Location: {establishment}*\n"
+            f"📋 {h['blueprint']}\n"
+            f"📈 Artery Clog: {new_c}% (+{gain}%)"
+        )
         if adren: msg += "\n\n⚡ **ADRENALINE SHOT!** Cooldown bypassed. GO AGAIN!"
         await update.message.reply_text(msg)
     
@@ -225,7 +233,6 @@ if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Explicit Individual Registration
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("hack", hack))
