@@ -5,7 +5,6 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # --- WEB SERVER ---
-# Priority: Flask must start quickly to satisfy Render's port check.
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -17,8 +16,9 @@ def health():
     return "OK", 200
 
 def run_flask():
+    # Render dynamic port binding - prioritized to fix 'No open ports' error
     port = int(os.environ.get("PORT", 10000))
-    logging.info(f"🚀 Binding to port {port}")
+    logging.info(f"🚀 Binding Flask to port {port}")
     flask_app.run(host='0.0.0.0', port=port)
 
 # --- BOT LOGIC ---
@@ -110,7 +110,6 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_total = user[0] if user and user[0] is not None else 0
     current_daily = user[2] if user and user[2] is not None else 0
     
-    # Check if last snack was before the reset
     if user and user[1] and user[1] < last_reset: current_daily = 0
 
     new_total = current_total + item['calories']
@@ -163,11 +162,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         adren = random.random() < 0.10
         save_t = now - timedelta(hours=2) if adren else now
         cur.execute("UPDATE pf_users SET daily_clog=daily_clog + %s, is_icu=False, last_hack=%s, ping_sent=FALSE WHERE user_id=%s", (gain, save_t, user_id))
-        msg = (
-            f"🩺 **HACK SUCCESS: {h['name']}**\n"
-            f"📍 *Location: {establishment}*\n"
-            f"📈 Artery Clog: {new_c}% (+{gain}%)"
-        )
+        msg = f"🩺 **HACK SUCCESS: {h['name']}**\n📍 *Location: {establishment}*\n📈 Artery Clog: {new_c}% (+{gain}%)"
         if adren: msg += "\n\n⚡ **ADRENALINE SHOT!** Cooldown bypassed."
         await update.message.reply_text(msg)
     
@@ -204,7 +199,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report, parse_mode='Markdown')
 
 async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows only users who hacked AFTER the most recent 8PM reset."""
     last_reset = get_last_reset_time()
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("""
@@ -250,12 +244,6 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{i+1}. {safe_name}: {r[1]:,} Cal\n"
     await update.message.reply_text(text, parse_mode='Markdown')
 
-async def timecheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now()
-    last_reset = get_last_reset_time()
-    msg = f"🕒 **Server UTC:** `{now.strftime('%H:%M:%S')}`\n🌅 **Last Reset:** `{last_reset.strftime('%Y-%m-%d %H:%M:%S')}`"
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
 async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("UPDATE pf_users SET total_calories=0, daily_calories=0, daily_clog=0, is_icu=FALSE WHERE user_id=%s", (update.effective_user.id,))
@@ -275,14 +263,10 @@ async def check_pings(application):
         conn.commit(); cur.close(); conn.close()
 
 if __name__ == '__main__':
-    # 1. Init Database
     init_db()
-    
-    # 2. Start Flask Web Server IMMEDIATELY in a background thread
-    # This prevents Render from seeing "no open ports" during bot startup.
+    # Prioritize Flask thread to satisfy Render's health checks
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # 3. Setup Telegram Application
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -292,12 +276,9 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("clogboard", clogboard))
     app.add_handler(CommandHandler("daily", daily))
-    app.add_handler(CommandHandler("timecheck", timecheck))
     app.add_handler(CommandHandler("reset_me", reset_me))
     
-    # 4. Schedule Background Tasks
     asyncio.get_event_loop().create_task(hard_reset_task(app))
     asyncio.get_event_loop().create_task(check_pings(app))
     
-    # 5. Start Bot
     app.run_polling(drop_pending_updates=True)
