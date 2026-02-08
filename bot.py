@@ -1,16 +1,17 @@
-import os, logging, random, json, psycopg2, threading, asyncio
+import os, logging, random, json, threading, asyncio
 from flask import Flask
 from datetime import datetime, timedelta, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # =========================
-# Logging (must be set before Flask thread starts)
+# Logging (early)
 # =========================
 logging.basicConfig(level=logging.INFO)
 
 # =========================
 # --- WEB SERVER (Render Port Binding) ---
+# IMPORTANT: Start ASAP so Render detects an open port even if bot/DB code errors later.
 # =========================
 flask_app = Flask(__name__)
 
@@ -23,14 +24,24 @@ def health():
     return "OK", 200
 
 def run_flask():
-    """
-    Render Web Services REQUIRE an open TCP port.
-    Bind immediately to 0.0.0.0:$PORT so Render detects it.
-    """
     port = int(os.environ.get("PORT", 10000))
-    logging.info(f"🚀 Binding Flask to 0.0.0.0:{port}")
-    # IMPORTANT: disable reloader/debug (can spawn extra process & confuse Render)
+    # use print+flush so you ALWAYS see it in Render logs
+    print(f"[BOOT] Flask binding to 0.0.0.0:{port}", flush=True)
     flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+# 🚀 Boot Flask immediately (not inside __main__) so Render sees the port fast
+threading.Thread(target=run_flask, daemon=True).start()
+
+# =========================
+# DB import (guarded)
+# psycopg2 import can crash on some hosts if deps are missing.
+# Prefer psycopg2-binary in requirements.
+# =========================
+try:
+    import psycopg2
+except Exception as e:
+    psycopg2 = None
+    logging.error(f"❌ psycopg2 import failed. Install psycopg2-binary. Error: {e}")
 
 # =========================
 # --- BOT CONFIG ---
@@ -39,7 +50,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # =========================
-# Load JSON (guarded so a missing file doesn't kill the whole deploy)
+# Load JSON (guarded so missing files don't kill deploy)
 # =========================
 foods = []
 hacks = []
@@ -60,6 +71,8 @@ except Exception as e:
 # DB helpers
 # =========================
 def get_db_connection():
+    if not psycopg2:
+        raise RuntimeError("psycopg2 is not available (install psycopg2-binary).")
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is missing.")
     return psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -189,7 +202,6 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("⚠️ hacks.json missing/empty on server. Upload it and redeploy.")
 
     user_id = update.effective_user.id
-    username = update.effective_user.username or update.effective_user.first_name or "Hacker"
     now = datetime.now()
     last_reset = get_last_reset_time()
 
@@ -208,7 +220,9 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cd = timedelta(hours=2) if is_icu else timedelta(hours=1)
             if now - l_hack < cd:
                 rem = cd - (now - l_hack)
-                return await update.message.reply_text(f"⚠️ {'🏥 ICU' if is_icu else '⏳ RECOVERY'}: {int(rem.total_seconds()//60)}m left.")
+                return await update.message.reply_text(
+                    f"⚠️ {'🏥 ICU' if is_icu else '⏳ RECOVERY'}: {int(rem.total_seconds()//60)}m left."
+                )
 
         h = random.choice(hacks)
         gain = random.randint(int(h.get("min_clog", 1)), int(h.get("max_clog", 5)))
@@ -228,7 +242,11 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "UPDATE pf_users SET daily_clog=daily_clog + %s, is_icu=False, last_hack=%s, ping_sent=FALSE WHERE user_id=%s",
                 (gain, save_t, user_id),
             )
-            msg = f"🩺 **HACK SUCCESS: {h.get('name','Hack')}**\n📍 *Location: {establishment}*\n📈 Artery Clog: {new_c}% (+{gain}%)"
+            msg = (
+                f"🩺 **HACK SUCCESS: {h.get('name','Hack')}**\n"
+                f"📍 *Location: {establishment}*\n"
+                f"📈 Artery Clog: {new_c}% (+{gain}%)"
+            )
             if adren:
                 msg += "\n\n⚡ **ADRENALINE SHOT!** Cooldown bypassed."
             await update.message.reply_text(msg)
@@ -413,10 +431,7 @@ async def check_pings(application):
 # Main
 # =========================
 if __name__ == "__main__":
-    # ✅ Start Flask IMMEDIATELY so Render detects an open port fast
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    # ✅ Don’t let DB init kill the service before the port is detected
+    # DB init (don't crash the service if DB is down)
     try:
         init_db()
     except Exception as e:
@@ -425,7 +440,6 @@ if __name__ == "__main__":
     if not TOKEN:
         logging.error("❌ TELEGRAM_TOKEN missing. Bot will not be able to start.")
 
-    # Build bot app
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -437,12 +451,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CommandHandler("reset_me", reset_me))
 
-    # ✅ Schedule background tasks using the bot's lifecycle loop
     async def post_init(application):
         application.create_task(hard_reset_task(application))
         application.create_task(check_pings(application))
 
     app.post_init = post_init
 
-    # Run polling
     app.run_polling(drop_pending_updates=True)
