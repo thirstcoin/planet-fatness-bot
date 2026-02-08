@@ -5,12 +5,20 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # --- WEB SERVER ---
+# Priority: Flask must start quickly to satisfy Render's port check.
 flask_app = Flask(__name__)
+
 @flask_app.route('/')
-def home(): return "Planet Fatness: Kitchen & Clog Lab are Open!"
+def home(): 
+    return "Planet Fatness: Kitchen & Clog Lab are Open!"
+
+@flask_app.route('/health')
+def health():
+    return "OK", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
+    logging.info(f"🚀 Binding to port {port}")
     flask_app.run(host='0.0.0.0', port=port)
 
 # --- BOT LOGIC ---
@@ -34,6 +42,7 @@ def init_db():
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS daily_clog INTEGER DEFAULT 0;")
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS is_icu BOOLEAN DEFAULT FALSE;")
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS last_hack TIMESTAMP DEFAULT NULL;")
+    cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS last_snack TIMESTAMP DEFAULT NULL;")
     cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS ping_sent BOOLEAN DEFAULT TRUE;")
     conn.commit()
     cur.close()
@@ -41,16 +50,15 @@ def init_db():
 
 def get_last_reset_time():
     now = datetime.now()
-    # 8 PM EST is 01:00 UTC next day.
+    # 8 PM EST is 01:00 UTC (Next Day)
     reset_today = datetime.combine(now.date(), time(1, 0)) 
     return reset_today if now >= reset_today else reset_today - timedelta(days=1)
 
-# --- NEW: HARD RESET TASK ---
+# --- HARD RESET TASK ---
 async def hard_reset_task(application):
     """Wipes all daily stats globally at exactly 8:00 PM EST (01:00 UTC)."""
     while True:
         now_utc = datetime.utcnow()
-        # Trigger at 01:00 UTC (8 PM EST)
         if now_utc.hour == 1 and now_utc.minute == 0:
             logging.info("🚨 8PM EST: Hard-resetting all daily stats.")
             try:
@@ -69,11 +77,8 @@ async def hard_reset_task(application):
                 logging.info("✅ Database bleached successfully.")
             except Exception as e:
                 logging.error(f"❌ Hard reset failed: {e}")
-            
-            # Sleep 61s so it doesn't trigger again in the same minute
             await asyncio.sleep(61)
-        
-        await asyncio.sleep(30) # Check every 30 seconds
+        await asyncio.sleep(30)
 
 # --- COMMANDS ---
 
@@ -82,10 +87,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Welcome to the Judgment Free Kitchen & Clog Lab! 🍔🧪\n\n"
         "High calories = High scores. Eat your daily meal, climb the board, and embrace the phatness.\n\n"
         "⚠️ **THE RULES:**\n"
-        "• Eat daily, climb the ranks.\n"
+        "• /snack daily to climb the ranks.\n"
         "• /hack at your own risk. DO NOT EXCEED 100% CLOG or you will flatline.\n"
-        "• **DAILY AIRDROPS:** The #1 Snacker and #1 Hacker at 8 PM EST win the drop!\n\n"
-        "Use /snack or /hack to begin."
+        "• **DAILY AIRDROPS:** The #1 Snacker and #1 Hacker at 8 PM EST win the drop!\n"
     )
 
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,6 +110,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_total = user[0] if user and user[0] is not None else 0
     current_daily = user[2] if user and user[2] is not None else 0
     
+    # Check if last snack was before the reset
     if user and user[1] and user[1] < last_reset: current_daily = 0
 
     new_total = current_total + item['calories']
@@ -152,30 +157,18 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     establishment = h.get('franchise', 'Secret Menu').upper()
 
     if new_c >= 100:
-        roasts = [
-            f"🚨 **FLATLINE!** Your heart sounded like a flip-flop in a dryer. ICU for 2 hours.",
-            f"💀 **DECEASED.** Arteries are now 100% solid butter. See you in 120 minutes.",
-            f"🏥 **CODE BLUE!** The paramedics found a {h['name']} in your hand. Recovery started."
-        ]
         cur.execute("UPDATE pf_users SET daily_clog=0, is_icu=True, last_hack=%s, ping_sent=False WHERE user_id=%s", (now, user_id))
-        await update.message.reply_text(random.choice(roasts))
+        await update.message.reply_text(f"💀 **FLATLINE!** Your heart gave out at {establishment}. ICU for 2 hours.")
     else:
         adren = random.random() < 0.10
         save_t = now - timedelta(hours=2) if adren else now
-        
-        cur.execute("""
-            UPDATE pf_users 
-            SET daily_clog = daily_clog + %s, is_icu = False, last_hack = %s, ping_sent = FALSE 
-            WHERE user_id = %s
-        """, (gain, save_t, user_id))
-        
+        cur.execute("UPDATE pf_users SET daily_clog=daily_clog + %s, is_icu=False, last_hack=%s, ping_sent=FALSE WHERE user_id=%s", (gain, save_t, user_id))
         msg = (
             f"🩺 **HACK SUCCESS: {h['name']}**\n"
             f"📍 *Location: {establishment}*\n"
-            f"📋 {h['blueprint']}\n"
             f"📈 Artery Clog: {new_c}% (+{gain}%)"
         )
-        if adren: msg += "\n\n⚡ **ADRENALINE SHOT!** Cooldown bypassed. GO AGAIN!"
+        if adren: msg += "\n\n⚡ **ADRENALINE SHOT!** Cooldown bypassed."
         await update.message.reply_text(msg)
     
     conn.commit(); cur.close(); conn.close()
@@ -191,10 +184,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT total_calories, daily_calories, daily_clog, is_icu, last_hack, last_snack FROM pf_users WHERE user_id = %s", (user_id,))
     user = cur.fetchone(); cur.close(); conn.close()
 
-    if not user: return await update.message.reply_text("❌ No records found. Go /snack or /hack first.")
+    if not user: return await update.message.reply_text("❌ No records found.")
 
     total_cal, daily_cal, clog, is_icu, l_hack, l_snack = user
-    
     if l_hack and l_hack < last_reset: clog, is_icu = 0, False
     if l_snack and l_snack < last_reset: daily_cal = 0
 
@@ -207,70 +199,68 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 *Daily:* {daily_cal or 0:,} Cal\n"
         f"📈 *Total:* {total_cal or 0:,} Cal\n"
         f"🩸 *Artery Clog:* {clog or 0}%\n"
-        f"━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━"
     )
-    if is_icu and l_hack:
-        rem = max(0, int(((l_hack + timedelta(hours=2)) - now).total_seconds() // 60))
-        report += f"🏥 _Patient unresponsive. Recovery: {rem}m._"
-    else:
-        note = "Blood consistency: Mayonnaise." if (clog or 0) > 50 else "Patient is suspiciously thin."
-        report += f"👨‍⚕️ _Note: {note}_"
-    
     await update.message.reply_text(report, parse_mode='Markdown')
 
 async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shows only users who hacked AFTER the most recent 8PM reset."""
     last_reset = get_last_reset_time()
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("""
-        SELECT username, daily_clog, is_icu 
-        FROM pf_users 
+        SELECT username, daily_clog, is_icu FROM pf_users 
         WHERE daily_clog > 0 AND last_hack >= %s 
         ORDER BY daily_clog DESC LIMIT 10
     """, (last_reset,))
     rows = cur.fetchall(); cur.close(); conn.close()
     
-    if not rows: return await update.message.reply_text("🧼 The ward is clean! No hacks recorded since the 8PM reset.")
+    if not rows: return await update.message.reply_text("🧼 The ward is clean!")
     
     text = "🏥 **CARDIAC WARD** 🏥\n\n"
-    for i, r in enumerate(rows): text += f"{i+1}. {r[0]}: {r[1]}%{' [ICU]' if r[2] else ''}\n"
-    await update.message.reply_text(text)
+    for i, r in enumerate(rows):
+        safe_name = r[0].replace("_", "\\_")
+        text += f"{i+1}. {safe_name}: {r[1]}%{' [ICU]' if r[2] else ''}\n"
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_reset = get_last_reset_time()
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("""
-        SELECT username, daily_calories 
-        FROM pf_users 
+        SELECT username, daily_calories FROM pf_users 
         WHERE daily_calories > 0 AND last_snack >= %s 
         ORDER BY daily_calories DESC LIMIT 10
     """, (last_reset,))
     rows = cur.fetchall(); cur.close(); conn.close()
     
-    if not rows: return await update.message.reply_text("🍳 Kitchen is empty. No snacking since the 8PM reset!")
+    if not rows: return await update.message.reply_text("🍳 Kitchen is empty!")
 
-    text = "🔥 TOP DAILY MUNCHERS 🔥\n*(#1 eligible for 8PM EST Airdrop)*\n\n"
-    for i, r in enumerate(rows): text += f"{i+1}. {r[0]}: {r[1]:,} Cal\n"
-    await update.message.reply_text(text)
+    text = "🔥 TOP DAILY MUNCHERS 🔥\n\n"
+    for i, r in enumerate(rows):
+        safe_name = r[0].replace("_", "\\_")
+        text += f"{i+1}. {safe_name}: {r[1]:,} Cal\n"
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT username, total_calories FROM pf_users ORDER BY total_calories DESC LIMIT 10")
     rows = cur.fetchall(); cur.close(); conn.close()
     text = "🏆 ALL-TIME PHATTEST 🏆\n\n"
-    for i, r in enumerate(rows): text += f"{i+1}. {r[0]}: {r[1]:,} Cal\n"
-    await update.message.reply_text(text)
+    for i, r in enumerate(rows):
+        safe_name = r[0].replace("_", "\\_")
+        text += f"{i+1}. {safe_name}: {r[1]:,} Cal\n"
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def timecheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now()
+    last_reset = get_last_reset_time()
+    msg = f"🕒 **Server UTC:** `{now.strftime('%H:%M:%S')}`\n🌅 **Last Reset:** `{last_reset.strftime('%Y-%m-%d %H:%M:%S')}`"
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def reset_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("UPDATE pf_users SET total_calories=0, daily_calories=0, daily_clog=0, is_icu=FALSE WHERE user_id=%s", (update.effective_user.id,))
     conn.commit(); cur.close(); conn.close()
     await update.message.reply_text("✅ Stats cleared.")
-
-async def wipe_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != "Degen_Eeyore": return
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("DELETE FROM pf_users"); conn.commit(); cur.close(); conn.close()
-    await update.message.reply_text("Sweep complete. 🧹 DATABASE WIPED.")
 
 async def check_pings(application):
     while True:
@@ -279,14 +269,20 @@ async def check_pings(application):
         cur.execute("SELECT user_id FROM pf_users WHERE ping_sent=FALSE AND (last_snack <= %s OR last_snack IS NULL) AND (last_hack <= %s OR last_hack IS NULL)", (ago, ago))
         for r in cur.fetchall():
             try:
-                await application.bot.send_message(chat_id=r[0], text="🔔 **READY:** Digestion complete. Time to /snack and /hack!")
+                await application.bot.send_message(chat_id=r[0], text="🔔 **READY:** Time to /snack and /hack!")
                 cur.execute("UPDATE pf_users SET ping_sent=TRUE WHERE user_id=%s", (r[0],))
             except: pass
         conn.commit(); cur.close(); conn.close()
 
 if __name__ == '__main__':
+    # 1. Init Database
     init_db()
+    
+    # 2. Start Flask Web Server IMMEDIATELY in a background thread
+    # This prevents Render from seeing "no open ports" during bot startup.
     threading.Thread(target=run_flask, daemon=True).start()
+    
+    # 3. Setup Telegram Application
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -296,11 +292,12 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("leaderboard", leaderboard))
     app.add_handler(CommandHandler("clogboard", clogboard))
     app.add_handler(CommandHandler("daily", daily))
+    app.add_handler(CommandHandler("timecheck", timecheck))
     app.add_handler(CommandHandler("reset_me", reset_me))
-    app.add_handler(CommandHandler("wipe_everything", wipe_everything))
     
-    # REGISTER BOTH TASKS
+    # 4. Schedule Background Tasks
     asyncio.get_event_loop().create_task(hard_reset_task(app))
     asyncio.get_event_loop().create_task(check_pings(app))
     
+    # 5. Start Bot
     app.run_polling(drop_pending_updates=True)
