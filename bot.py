@@ -51,7 +51,7 @@ def escape_name(name):
     return name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
 # ==========================================
-# 3. DATABASE INITIALIZATION (FIXED & SELF-HEALING)
+# 3. DATABASE INITIALIZATION
 # ==========================================
 def init_db():
     conn = get_db_connection(); cur = conn.cursor()
@@ -64,7 +64,6 @@ def init_db():
             ping_sent BOOLEAN DEFAULT TRUE
         );
     """)
-    
     columns_to_add = [
         ("last_gift_sent", "TIMESTAMP"),
         ("sabotage_val", "BIGINT DEFAULT 0"),
@@ -73,10 +72,8 @@ def init_db():
     for col_name, col_type in columns_to_add:
         try:
             cur.execute(f"ALTER TABLE pf_users ADD COLUMN {col_name} {col_type};")
-            logger.info(f"✅ Successfully added missing column: {col_name}")
         except Exception:
             conn.rollback() 
-            
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
             id SERIAL PRIMARY KEY, winner_type TEXT, username TEXT, 
@@ -108,7 +105,6 @@ async def automated_reset_task(application):
                         cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
                 conn.commit(); cur.close(); conn.close()
-                logger.info("🚨 8PM Reset Complete.")
             except Exception as e: logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
         await asyncio.sleep(30)
@@ -140,17 +136,27 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u and u[1] and now - u[1] < timedelta(hours=1):
             rem = timedelta(hours=1) - (now - u[1])
             return await update.message.reply_text(f"⌛️ Digesting... {int(rem.total_seconds()//60)}m left.")
+        
         item = random.choice(foods)
+        cal_val = item['calories']
         c_total, c_daily = (u[0] or 0, u[2] or 0) if u else (0, 0)
-        new_total, new_daily = c_total + item['calories'], c_daily + item['calories']
+        
+        # Apply changes with floors to prevent negative totals
+        new_total = max(0, c_total + cal_val)
+        new_daily = max(0, c_daily + cal_val)
+
         cur.execute("""
             INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack, ping_sent)
             VALUES (%s, %s, %s, %s, %s, FALSE)
             ON CONFLICT (user_id) DO UPDATE SET
-            username=EXCLUDED.username, total_calories=EXCLUDED.total_calories, daily_calories=EXCLUDED.daily_calories, last_snack=EXCLUDED.last_snack, ping_sent=FALSE
+            username=EXCLUDED.username, total_calories=EXCLUDED.total_calories, 
+            daily_calories=EXCLUDED.daily_calories, last_snack=EXCLUDED.last_snack, ping_sent=FALSE
         """, (user.id, user.username or user.first_name, new_total, new_daily, now))
         conn.commit(); cur.close(); conn.close()
-        await update.message.reply_text(f"🍔 **{item['name']}** (+{item['calories']} Cal)\n🔥 Daily: {new_daily:,}")
+
+        # Polished signage
+        sign = "+" if cal_val > 0 else ""
+        await update.message.reply_text(f"🍔 **{item['name']}** ({sign}{cal_val:,} Cal)\n🔥 Daily: {new_daily:,}")
     except Exception as e: 
         logger.error(f"Snack Error: {e}")
         await update.message.reply_text("❌ Kitchen Busy.")
@@ -165,6 +171,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if l_hack and now - l_hack < cd:
         rem = cd - (now - l_hack)
         return await update.message.reply_text(f"🏥 {'ICU' if is_icu else 'Recovery'}: {int(rem.total_seconds()//60)}m left.")
+    
     h = random.choice(hacks)
     gain = random.randint(int(h.get("min_clog", 1)), int(h.get("max_clog", 5)))
     new_c = clog + gain
@@ -177,17 +184,15 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
-# 6. MYSTERY GIFT LOGIC (HARDENED)
+# 6. MYSTERY GIFT LOGIC
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
-    
     if not update.message.reply_to_message:
         return await update.message.reply_text("💡 You must **REPLY** to a message with /gift to drop a shipment!")
     
     receiver = update.message.reply_to_message.from_user
-    if receiver.id == sender.id: 
-        return await update.message.reply_text("🚫 Self-gifting is prohibited.")
+    if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
 
     try:
         conn = get_db_connection(); cur = conn.cursor()
@@ -205,27 +210,18 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         is_poison = random.choice([True, False])
         if is_poison:
-            item = random.choice(PUNISHMENTS)
-            val = random.randint(item['v'][0], item['v'][1])
-            i_type = "POISON"
+            item = random.choice(PUNISHMENTS); val = random.randint(item['v'][0], item['v'][1]); i_type = "POISON"
         else:
-            item = random.choice(foods)
-            val = item.get('calories', 500)
-            i_type = "PROTEIN"
+            item = random.choice(foods); val = item.get('calories', 500); i_type = "PROTEIN"
 
         cur.execute("""
             INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) 
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
-        
         cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
         conn.commit(); cur.close(); conn.close()
-        
         await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
-
-    except Exception as e:
-        logger.error(f"❌ Gift Crash: {e}")
-        await update.message.reply_text(f"⚠️ **SYSTEM ERROR:** {e}")
+    except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -238,20 +234,18 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_id, s_name, i_name, i_type, val, s_id = row
         cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (g_id,))
         cur.execute("""
-            UPDATE pf_users 
-            SET daily_calories = GREATEST(0, daily_calories + %s), 
-                total_calories = GREATEST(0, total_calories + %s) 
-            WHERE user_id = %s
+            UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s), 
+            total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s
         """, (val, val, user_id))
         
         col = "gifts_sent_val" if i_type == "PROTEIN" else "sabotage_val"
         cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(val), s_id))
         conn.commit(); cur.close(); conn.close()
         
-        formatted_val = f"{val:+,}" if val > 0 else f"{val:,}"
+        sign = "+" if val > 0 else ""
         header = "💉 **FUEL INJECTED!**" if i_type == "PROTEIN" else "💀 **TOXIN DETECTED!**"
-        await update.message.reply_text(f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {formatted_val} Cal")
-    except Exception as e: await update.message.reply_text(f"⚠️ Error opening: {e}")
+        await update.message.reply_text(f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {sign}{val:,} Cal")
+    except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
 
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -321,7 +315,7 @@ async def set_bot_commands(application):
         ("daily", "The Daily Feeding Frenzy"),
         ("leaderboard", "The Hall of Infinite Girth"),
         ("clogboard", "Beats from the Cardiac Ward"),
-        ("winners", "The 8PM Air-drop Legends")
+        ("winners", "The 8PM Airdrop Legends")
     ]
     await application.bot.set_my_commands(cmds)
 
@@ -344,7 +338,7 @@ if __name__ == "__main__":
         await set_bot_commands(application)
         application.create_task(automated_reset_task(application))
         application.create_task(check_pings(application))
-        logger.info("🚀 Planet Fatness: Mystery Shipment Protocol Active.")
+        logger.info("🚀 Planet Fatness Online.")
 
     app.post_init = post_init
     app.run_polling(drop_pending_updates=True)
