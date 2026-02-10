@@ -86,7 +86,7 @@ def init_db():
 async def automated_reset_task(application):
     while True:
         now_utc = datetime.utcnow()
-        if now_utc.hour == 1 and now_utc.minute == 0:
+        if now_utc.hour == 1 and now_utc.minute == 0: # 8PM EST
             try:
                 conn = get_db_connection(); cur = conn.cursor()
                 for label, col in [('DAILY PHATTEST', 'daily_calories'), ('TOP HACKER', 'daily_clog')]:
@@ -117,7 +117,7 @@ async def check_pings(application):
         except: pass
 
 # ==========================================
-# 5. ACTIONS: SNACK, HACK, GIFT
+# 5. CORE ACTIONS
 # ==========================================
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, now = update.effective_user, datetime.utcnow()
@@ -211,33 +211,31 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
 # ==========================================
-# 6. REPORTS & LEADERBOARDS (RESTORED)
+# 6. REPORTS & LEADERBOARDS
 # ==========================================
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT username, daily_calories FROM pf_users WHERE daily_calories > 0 ORDER BY daily_calories DESC LIMIT 10")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("🍔 **NO MUNCHERS YET TODAY.**")
-    text = "🔥 **DAILY PHATTEST (SINCE 8PM)** 🔥\n━━━━━━━━━━━━━━\n"
+    text = "🔥 **DAILY FEEDING FRENZY** 🔥\n━━━━━━━━━━━━━━\n"
     text += "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """RESTORED: All-time phattest leaderboard."""
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT username, total_calories FROM pf_users ORDER BY total_calories DESC LIMIT 10")
     rows = cur.fetchall(); cur.close(); conn.close()
-    text = "🏆 **ALL-TIME PHATTEST** 🏆\n━━━━━━━━━━━━━━\n"
+    text = "🏆 **THE HALL OF INFINITE GIRTH** 🏆\n━━━━━━━━━━━━━━\n"
     text += "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """RESTORED: Current daily clog percentages."""
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT username, daily_clog, is_icu FROM pf_users WHERE daily_clog > 0 ORDER BY daily_clog DESC LIMIT 10")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("🧪 **THE LAB IS CLEAN.**")
-    text = "🧪 **CURRENT CLOGBOARD** 🧪\n━━━━━━━━━━━━━━\n"
+    text = "🧪 **BEATS FROM THE CARDIAC WARD** 🧪\n━━━━━━━━━━━━━━\n"
     text += "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]}% {'💀' if r[2] else ''}" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -246,7 +244,7 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT winner_type, username, score, win_date FROM pf_airdrop_winners ORDER BY win_date DESC LIMIT 15")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("📜 Hall of Fame is empty.")
-    text = "🏆 **HALL OF FAME (8PM SNAPSHOTS)** 🏆\n━━━━━━━━━━━━━━\n"
+    text = "🏆 **THE 8PM AIRDROP LEGENDS** 🏆\n━━━━━━━━━━━━━━\n"
     for r in rows:
         icon = "🍔" if r[0] == 'DAILY PHATTEST' else "🧪"
         text += f"{icon} `{r[3].strftime('%m/%d')}` | **{r[0]}**: {escape_name(r[1])} ({r[2]:,})\n"
@@ -258,17 +256,33 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT total_calories, daily_calories, daily_clog, is_icu FROM pf_users WHERE user_id = %s", (user.id,))
     u = cur.fetchone(); cur.close(); conn.close()
     if not u: return await update.message.reply_text("❌ No records.")
-    msg = f"📋 *REPORT: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {u[1]:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {u[2]}%\n━━━━━━━━━━━━━━"
+    msg = f"📋 *VITALS: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {u[1]:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {u[2]}%\n━━━━━━━━━━━━━━"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 # ==========================================
-# 7. STARTUP & REGISTRATION
+# 7. STARTUP & AUTO-MENU CONFIGURATION
 # ==========================================
+async def set_bot_commands(application):
+    """Automatically synchronizes the menu language with Telegram."""
+    cmds = [
+        ("snack", "Devour a mystery feast"),
+        ("hack", "Infiltrate the Secret Menu Lab"),
+        ("gift", "Dispatch Fuel or Sabotage [Reply]"),
+        ("open", "Unbox your pending shipment"),
+        ("trash", "Dump the contraband (Costs 100 Cal)"),
+        ("status", "Review your medical vitals"),
+        ("daily", "The Daily Feeding Frenzy"),
+        ("leaderboard", "The Hall of Infinite Girth"),
+        ("clogboard", "Beats from the Cardiac Ward"),
+        ("winners", "The 8PM Airdrop Legends")
+    ]
+    await application.bot.set_my_commands(cmds)
+
 if __name__ == "__main__":
     init_db()
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Registering ALL Commands
+    # Logic Handlers
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("hack", hack))
     app.add_handler(CommandHandler("gift", gift))
@@ -281,8 +295,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("winners", winners))
     
     async def post_init(application):
-        application.create_task(automated_reset_task(application))
-        application.create_task(check_pings(application))
-    
+        await set_bot_commands(application) # Auto-update UI Menu
+        application.create_task(automated_reset_task(application)) # Start 8PM Snapshot
+        application.create_task(check_pings(application)) # Start Pings
+        logger.info("🚀 Planet Fatness: Final Engine Engaged.")
+
     app.post_init = post_init
     app.run_polling(drop_pending_updates=True)
