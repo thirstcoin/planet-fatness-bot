@@ -7,17 +7,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # ==========================================
 # 1. LOGGING & WEB SERVER
 # ==========================================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
-def home(): 
-    return "Planet Fatness Master Server is LIVE! 🍔🧪", 200
+def home(): return "Planet Fatness Master Server is LIVE! 🍔🧪", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -27,9 +22,8 @@ threading.Thread(target=run_flask, daemon=True).start()
 
 try:
     import psycopg2
-except Exception as e:
+except:
     psycopg2 = None
-    logger.error("❌ psycopg2-binary missing. Ensure it is in requirements.txt.")
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -41,8 +35,7 @@ foods, hacks = [], []
 try:
     with open("foods.json", "r") as f: foods = json.load(f)
     with open("hacks.json", "r") as f: hacks = json.load(f)
-except Exception as e: 
-    logger.error(f"❌ JSON Load Failed: {e}")
+except Exception as e: logger.error(f"❌ JSON Load Failed: {e}")
 
 PUNISHMENTS = [
     {"name": "Industrial Laxative", "msg": "Daily total vanished in a flash. 🚽", "v": (-3000, -1800)},
@@ -51,8 +44,7 @@ PUNISHMENTS = [
     {"name": "Personal Trainer's Card", "msg": "Calories burned in pure fear. 🏃‍♂️", "v": (-1200, -800)}
 ]
 
-def get_db_connection(): 
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+def get_db_connection(): return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def escape_name(name):
     if not name: return "Chef"
@@ -60,7 +52,6 @@ def escape_name(name):
 
 def get_last_reset_time():
     now = datetime.utcnow()
-    # 8 PM EST = 01:00 UTC
     reset_today = datetime.combine(now.date(), time(1, 0)) 
     return reset_today if now >= reset_today else reset_today - timedelta(days=1)
 
@@ -103,7 +94,6 @@ async def automated_reset_task(application):
         if now_utc.hour == 1 and now_utc.minute == 0:
             try:
                 conn = get_db_connection(); cur = conn.cursor()
-                # Log Daily Phattest (Handles Ties)
                 cur.execute("""
                     WITH TopScore AS (SELECT MAX(daily_calories) as max_cal FROM pf_users WHERE daily_calories > 0)
                     SELECT username, daily_calories FROM pf_users, TopScore WHERE daily_calories = TopScore.max_cal
@@ -112,7 +102,6 @@ async def automated_reset_task(application):
                 for w in winners_cal:
                     cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES ('DAILY PHATTEST', %s, %s)", (w[0], w[1]))
 
-                # Log Top Hacker (Handles Ties)
                 cur.execute("""
                     WITH TopClog AS (SELECT MAX(daily_clog) as max_clog FROM pf_users WHERE daily_clog > 0)
                     SELECT username, daily_clog FROM pf_users, TopClog WHERE daily_clog = TopClog.max_clog
@@ -123,7 +112,6 @@ async def automated_reset_task(application):
 
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
                 conn.commit(); cur.close(); conn.close()
-                logger.info("🚨 RESET COMPLETE: Porches cleared for a new day.")
             except Exception as e: logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
         await asyncio.sleep(30)
@@ -145,7 +133,7 @@ async def check_pings(application):
         except: pass
 
 # ==========================================
-# 5. CORE GAMEPLAY (SNACK & HACK)
+# 5. CORE GAMEPLAY
 # ==========================================
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -195,14 +183,14 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_c = clog + gain
     if new_c >= 100:
         cur.execute("UPDATE pf_users SET daily_clog=0, is_icu=True, last_hack=%s WHERE user_id=%s", (now, user_id))
-        await update.message.reply_text(f"💀 **FLATLINE!** Lab failure at {h.get('franchise','Generic')}. ICU for 2 hours.")
+        await update.message.reply_text(f"💀 **FLATLINE!** Artery failure. ICU for 2 hours.")
     else:
         cur.execute("UPDATE pf_users SET daily_clog=daily_clog + %s, is_icu=False, last_hack=%s WHERE user_id=%s", (gain, now, user_id))
         await update.message.reply_text(f"🩺 **HACK SUCCESS:** {h.get('name')}\n📈 Clog: {new_c}% (+{gain}%)")
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
-# 6. SOCIAL (GIFTING & CLEAR PORCH LOGIC)
+# 6. SOCIAL (GIFTING & LOCKED PORCH)
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender = update.effective_user
@@ -216,11 +204,10 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receiver.id == sender.id: return await update.message.reply_text("🚫 No self-gifting.")
     
     conn = get_db_connection(); cur = conn.cursor()
-    # CLEAR PORCH CHECK: Receiver must have 0 unopened gifts
     cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
     if cur.fetchone():
         conn.close()
-        return await update.message.reply_text(f"📦 **PORCH BLOCKED:** @{escape_name(receiver.username or receiver.first_name)} has an unopened gift! They must `/open` or `/trash` it first.")
+        return await update.message.reply_text(f"📦 **PORCH BLOCKED:** @{escape_name(receiver.username or receiver.first_name)} must `/open` or `/trash` first.")
 
     cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
     res = cur.fetchone()
@@ -239,7 +226,7 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'A fresh delivery!')))
     cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
     conn.commit(); cur.close(); conn.close()
-    await update.message.reply_text(f"📦 **DELIVERY DROPPED OFF FOR @{escape_name(receiver.username or receiver.first_name)}!**\n✅ `/open` or 🗑️ `/trash` (100 Cal fee)")
+    await update.message.reply_text(f"📦 **DELIVERY DROPPED OFF!**\n✅ `/open` or 🗑️ `/trash` (100 Cal fee)")
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -249,7 +236,14 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not row: return await update.message.reply_text("📦 Your porch is empty.")
     
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (row[0],))
-    cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s) WHERE user_id = %s", (row[4], user_id))
+    # Deduct/Add from both Daily and Total
+    cur.execute("""
+        UPDATE pf_users SET 
+        daily_calories = GREATEST(0, daily_calories + %s),
+        total_calories = GREATEST(0, total_calories + %s)
+        WHERE user_id = %s
+    """, (row[4], row[4], user_id))
+    
     col = "gifts_sent_val" if row[3] == "TREAT" else "sabotage_val"
     cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(row[4]), row[6]))
     conn.commit(); cur.close(); conn.close()
@@ -263,10 +257,17 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE ORDER BY id DESC LIMIT 1", (user_id,))
     res = cur.fetchone()
     if not res: return await update.message.reply_text("🗑️ Nothing to trash.")
+    
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (res[0],))
-    cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories - 100) WHERE user_id = %s", (user_id,))
+    # DEDUCTS FROM BOTH DAILY AND TOTAL
+    cur.execute("""
+        UPDATE pf_users SET 
+        daily_calories = GREATEST(0, daily_calories - 100),
+        total_calories = GREATEST(0, total_calories - 100)
+        WHERE user_id = %s
+    """, (user_id,))
     conn.commit(); cur.close(); conn.close()
-    await update.message.reply_text("🚮 **TRASHED:** You paid 100 Cal to clear your porch.")
+    await update.message.reply_text("🚮 **TRASHED:** 100 Cal paid from Lifetime & Daily progress.")
 
 # ==========================================
 # 7. STATUS & LEADERBOARDS
@@ -301,7 +302,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 # ==========================================
-# 8. INITIALIZATION
+# 8. STARTUP
 # ==========================================
 if __name__ == "__main__":
     init_db()
