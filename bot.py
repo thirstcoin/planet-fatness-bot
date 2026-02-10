@@ -51,20 +51,34 @@ def escape_name(name):
     return name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
 # ==========================================
-# 3. DATABASE INITIALIZATION
+# 3. DATABASE INITIALIZATION (FIXED & SELF-HEALING)
 # ==========================================
 def init_db():
     conn = get_db_connection(); cur = conn.cursor()
+    # 1. Ensure the base users table exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
             total_calories BIGINT DEFAULT 0, daily_calories INTEGER DEFAULT 0,
             daily_clog INTEGER DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
-            last_snack TIMESTAMP, last_hack TIMESTAMP, last_gift_sent TIMESTAMP,
-            ping_sent BOOLEAN DEFAULT TRUE, sabotage_val BIGINT DEFAULT 0,
-            gifts_sent_val BIGINT DEFAULT 0
+            last_snack TIMESTAMP, last_hack TIMESTAMP,
+            ping_sent BOOLEAN DEFAULT TRUE
         );
     """)
+    
+    # 2. Add missing Gifting columns if they don't exist
+    columns_to_add = [
+        ("last_gift_sent", "TIMESTAMP"),
+        ("sabotage_val", "BIGINT DEFAULT 0"),
+        ("gifts_sent_val", "BIGINT DEFAULT 0")
+    ]
+    for col_name, col_type in columns_to_add:
+        try:
+            cur.execute(f"ALTER TABLE pf_users ADD COLUMN {col_name} {col_type};")
+            logger.info(f"✅ Successfully added missing column: {col_name}")
+        except Exception:
+            conn.rollback() # Column likely already exists
+            
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
             id SERIAL PRIMARY KEY, winner_type TEXT, username TEXT, 
