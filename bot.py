@@ -52,7 +52,6 @@ def escape_name(name):
 
 def get_last_reset_time():
     now = datetime.utcnow()
-    # 8 PM EST = 01:00 UTC
     reset_today = datetime.combine(now.date(), time(1, 0)) 
     return reset_today if now >= reset_today else reset_today - timedelta(days=1)
 
@@ -197,7 +196,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receiver.id == sender.id: return await update.message.reply_text("🚫 No self-gifting.")
     
     conn = get_db_connection(); cur = conn.cursor()
-    # DOCK CHECK
     cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
     if cur.fetchone():
         conn.close()
@@ -250,7 +248,6 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not res: return await update.message.reply_text("🗑️ Dock is empty.")
     
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (res[0],))
-    # DEDUCT FROM BOTH
     cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories - 100), total_calories = GREATEST(0, total_calories - 100) WHERE user_id = %s", (user_id,))
     conn.commit(); cur.close(); conn.close()
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal (Lifetime & Daily) to clear the dock.")
@@ -268,6 +265,34 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clog = u[2] if u[4] and u[4] >= last_reset else 0
     msg = f"📋 *REPORT: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {d_cal:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {clog}%\n━━━━━━━━━━━━━━"
     await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    last_reset = get_last_reset_time()
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("""
+        SELECT username, daily_clog, is_icu FROM pf_users 
+        WHERE last_hack >= %s AND daily_clog > 0
+        ORDER BY daily_clog DESC LIMIT 10
+    """, (last_reset,))
+    rows = cur.fetchall(); cur.close(); conn.close()
+    if not rows: return await update.message.reply_text("🏥 **CARDIAC WARD EMPTY.**")
+    text = "🧪 **CARDIAC WARD: TOP CLOGS** 🧪\n━━━━━━━━━━━━━━\n"
+    text += "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]}% {'💀' if r[2] else ''}" for i, r in enumerate(rows)])
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    last_reset = get_last_reset_time()
+    conn = get_db_connection(); cur = conn.cursor()
+    cur.execute("""
+        SELECT username, daily_calories FROM pf_users 
+        WHERE (last_snack >= %s OR last_gift_sent >= %s) AND daily_calories > 0
+        ORDER BY daily_calories DESC LIMIT 10
+    """, (last_reset, last_reset))
+    rows = cur.fetchall(); cur.close(); conn.close()
+    if not rows: return await update.message.reply_text("🍔 **NO MUNCHERS YET TODAY.**")
+    text = "🔥 **DAILY PHATTEST (SINCE 8PM)** 🔥\n━━━━━━━━━━━━━━\n"
+    text += "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
@@ -301,6 +326,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("winners", winners))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("clogboard", clogboard))
+    app.add_handler(CommandHandler("daily", daily))
     async def post_init(application):
         application.create_task(automated_reset_task(application))
         application.create_task(check_pings(application))
