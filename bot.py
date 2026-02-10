@@ -55,7 +55,6 @@ def escape_name(name):
 # ==========================================
 def init_db():
     conn = get_db_connection(); cur = conn.cursor()
-    # 1. Ensure the base users table exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
@@ -66,7 +65,6 @@ def init_db():
         );
     """)
     
-    # 2. Add missing Gifting columns if they don't exist
     columns_to_add = [
         ("last_gift_sent", "TIMESTAMP"),
         ("sabotage_val", "BIGINT DEFAULT 0"),
@@ -77,7 +75,7 @@ def init_db():
             cur.execute(f"ALTER TABLE pf_users ADD COLUMN {col_name} {col_type};")
             logger.info(f"✅ Successfully added missing column: {col_name}")
         except Exception:
-            conn.rollback() # Column likely already exists
+            conn.rollback() 
             
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
@@ -193,14 +191,11 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         conn = get_db_connection(); cur = conn.cursor()
-        
-        # Check for Unopened Gift
         cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
         if cur.fetchone():
             conn.close()
             return await update.message.reply_text(f"📦 **DOCK BLOCKED:** {escape_name(receiver.first_name)} has an unopened shipment.")
 
-        # Check Cooldown
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=1):
@@ -208,7 +203,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
 
-        # Mystery Roll
         is_poison = random.choice([True, False])
         if is_poison:
             item = random.choice(PUNISHMENTS)
@@ -225,8 +219,8 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
         
         cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
-        
         conn.commit(); cur.close(); conn.close()
+        
         await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
 
     except Exception as e:
@@ -241,15 +235,22 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = cur.fetchone()
         if not row: return await update.message.reply_text("📦 Your dock is empty.")
         
-        cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (row[0],))
-        cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s), total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s", (row[4], row[4], user_id))
+        g_id, s_name, i_name, i_type, val, s_id = row
+        cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (g_id,))
+        cur.execute("""
+            UPDATE pf_users 
+            SET daily_calories = GREATEST(0, daily_calories + %s), 
+                total_calories = GREATEST(0, total_calories + %s) 
+            WHERE user_id = %s
+        """, (val, val, user_id))
         
-        col = "gifts_sent_val" if row[3] == "PROTEIN" else "sabotage_val"
-        cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(row[4]), row[5]))
+        col = "gifts_sent_val" if i_type == "PROTEIN" else "sabotage_val"
+        cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(val), s_id))
         conn.commit(); cur.close(); conn.close()
         
-        header = "💉 **FUEL INJECTED!**" if row[3] == "PROTEIN" else "💀 **TOXIN DETECTED!**"
-        await update.message.reply_text(f"{header}\nFrom **{escape_name(row[1])}**: {row[2]}\n📈 Impact: {row[4]:+,} Cal")
+        formatted_val = f"{val:+,}" if val > 0 else f"{val:,}"
+        header = "💉 **FUEL INJECTED!**" if i_type == "PROTEIN" else "💀 **TOXIN DETECTED!**"
+        await update.message.reply_text(f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {formatted_val} Cal")
     except Exception as e: await update.message.reply_text(f"⚠️ Error opening: {e}")
 
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -309,9 +310,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"📋 *VITALS: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {u[1]:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {u[2]}%\n━━━━━━━━━━━━━━"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
-# ==========================================
-# 8. STARTUP & AUTO-MENU CONFIGURATION
-# ==========================================
 async def set_bot_commands(application):
     cmds = [
         ("snack", "Devour a mystery feast"),
@@ -323,7 +321,7 @@ async def set_bot_commands(application):
         ("daily", "The Daily Feeding Frenzy"),
         ("leaderboard", "The Hall of Infinite Girth"),
         ("clogboard", "Beats from the Cardiac Ward"),
-        ("winners", "The 8PM Airdrop Legends")
+        ("winners", "The 8PM Air-drop Legends")
     ]
     await application.bot.set_my_commands(cmds)
 
