@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
-def home(): return "Planet Fatness: Mystery Protocol Active 🧪🍔", 200
+def home(): return "Planet Fatness: All Systems Online 🧪🍔", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -139,7 +139,9 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, (user.id, user.username or user.first_name, new_total, new_daily, now))
         conn.commit(); cur.close(); conn.close()
         await update.message.reply_text(f"🍔 **{item['name']}** (+{item['calories']} Cal)\n🔥 Daily: {new_daily:,}")
-    except: await update.message.reply_text("❌ Kitchen Busy.")
+    except Exception as e: 
+        logger.error(f"Snack Error: {e}")
+        await update.message.reply_text("❌ Kitchen Busy.")
 
 async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id, now = update.effective_user.id, datetime.utcnow()
@@ -163,60 +165,78 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
-# 6. MYSTERY GIFT LOGIC (UPDATED)
+# 6. MYSTERY GIFT LOGIC (HARDENED)
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
+    
     if not update.message.reply_to_message:
-        return await update.message.reply_text("💡 Reply to a degen with `/gift` to drop a mystery shipment!")
+        return await update.message.reply_text("💡 You must **REPLY** to a message with /gift to drop a shipment!")
     
     receiver = update.message.reply_to_message.from_user
-    if receiver.id == sender.id: return await update.message.reply_text("🚫 No self-gifting.")
-    
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
-    if cur.fetchone():
-        conn.close()
-        return await update.message.reply_text("📦 **DOCK BLOCKED:** Receiver already has an unopened mystery package.")
+    if receiver.id == sender.id: 
+        return await update.message.reply_text("🚫 Self-gifting is prohibited.")
 
-    cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
-    res = cur.fetchone()
-    if res and res[0] and now - res[0] < timedelta(hours=1):
-        rem = timedelta(hours=1) - (now - res[0])
-        conn.close()
-        return await update.message.reply_text(f"⏳ Cooldown: {int(rem.total_seconds()//60)}m.")
-    
-    # 🎲 THE MYSTERY ROLL (50/50 Chance)
-    is_poison = random.choice([True, False])
-    item = random.choice(PUNISHMENTS) if is_poison else random.choice(foods)
-    val = random.randint(*item['v']) if is_poison else item.get('calories')
-    i_type = "POISON" if is_poison else "PROTEIN"
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        
+        # Check for Unopened Gift
+        cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
+        if cur.fetchone():
+            conn.close()
+            return await update.message.reply_text(f"📦 **DOCK BLOCKED:** {escape_name(receiver.first_name)} has an unopened shipment.")
 
-    cur.execute("""
-        INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Shipment Inbound!')))
-    cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
-    conn.commit(); cur.close(); conn.close()
-    
-    await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
+        # Check Cooldown
+        cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
+        res = cur.fetchone()
+        if res and res[0] and now - res[0] < timedelta(hours=1):
+            rem = timedelta(hours=1) - (now - res[0])
+            conn.close()
+            return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
+
+        # Mystery Roll
+        is_poison = random.choice([True, False])
+        if is_poison:
+            item = random.choice(PUNISHMENTS)
+            val = random.randint(item['v'][0], item['v'][1])
+            i_type = "POISON"
+        else:
+            item = random.choice(foods)
+            val = item.get('calories', 500)
+            i_type = "PROTEIN"
+
+        cur.execute("""
+            INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
+        
+        cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
+        
+        conn.commit(); cur.close(); conn.close()
+        await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
+
+    except Exception as e:
+        logger.error(f"❌ Gift Crash: {e}")
+        await update.message.reply_text(f"⚠️ **SYSTEM ERROR:** {e}")
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT id, sender_name, item_name, item_type, value, sender_id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE ORDER BY id DESC LIMIT 1", (user_id,))
-    row = cur.fetchone()
-    if not row: return await update.message.reply_text("📦 No deliveries at the dock.")
-    
-    cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (row[0],))
-    cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s), total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s", (row[4], row[4], user_id))
-    
-    col = "gifts_sent_val" if row[3] == "PROTEIN" else "sabotage_val"
-    cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(row[4]), row[5]))
-    conn.commit(); cur.close(); conn.close()
-    
-    header = "💉 **FUEL INJECTED!**" if row[3] == "PROTEIN" else "💀 **TOXIN DETECTED!**"
-    await update.message.reply_text(f"{header}\nFrom **{escape_name(row[1])}**: {row[2]}\n📈 Impact: {row[4]:+,} Cal")
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("SELECT id, sender_name, item_name, item_type, value, sender_id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE ORDER BY id DESC LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        if not row: return await update.message.reply_text("📦 Your dock is empty.")
+        
+        cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (row[0],))
+        cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s), total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s", (row[4], row[4], user_id))
+        
+        col = "gifts_sent_val" if row[3] == "PROTEIN" else "sabotage_val"
+        cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(row[4]), row[5]))
+        conn.commit(); cur.close(); conn.close()
+        
+        header = "💉 **FUEL INJECTED!**" if row[3] == "PROTEIN" else "💀 **TOXIN DETECTED!**"
+        await update.message.reply_text(f"{header}\nFrom **{escape_name(row[1])}**: {row[2]}\n📈 Impact: {row[4]:+,} Cal")
+    except Exception as e: await update.message.reply_text(f"⚠️ Error opening: {e}")
 
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -224,7 +244,7 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE receiver_id = %s AND is_opened = FALSE", (user_id,))
     cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories - 100) WHERE user_id = %s", (user_id,))
     conn.commit(); cur.close(); conn.close()
-    await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal to safely dispose of the mystery package.")
+    await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
 # ==========================================
 # 7. REPORTS & LEADERBOARDS
