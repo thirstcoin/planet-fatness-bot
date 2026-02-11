@@ -61,19 +61,10 @@ def init_db():
             total_calories BIGINT DEFAULT 0, daily_calories INTEGER DEFAULT 0,
             daily_clog INTEGER DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
             last_snack TIMESTAMP, last_hack TIMESTAMP,
-            ping_sent BOOLEAN DEFAULT TRUE
+            ping_sent BOOLEAN DEFAULT TRUE, last_gift_sent TIMESTAMP,
+            sabotage_val BIGINT DEFAULT 0, gifts_sent_val BIGINT DEFAULT 0
         );
     """)
-    columns_to_add = [
-        ("last_gift_sent", "TIMESTAMP"),
-        ("sabotage_val", "BIGINT DEFAULT 0"),
-        ("gifts_sent_val", "BIGINT DEFAULT 0")
-    ]
-    for col_name, col_type in columns_to_add:
-        try:
-            cur.execute(f"ALTER TABLE pf_users ADD COLUMN {col_name} {col_type};")
-        except Exception:
-            conn.rollback() 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
             id SERIAL PRIMARY KEY, winner_type TEXT, username TEXT, 
@@ -129,35 +120,36 @@ async def check_pings(application):
 # ==========================================
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, now = update.effective_user, datetime.utcnow()
+    conn = None
     try:
         conn = get_db_connection(); cur = conn.cursor()
-        cur.execute("SELECT total_calories, last_snack, daily_calories FROM pf_users WHERE user_id = %s", (user.id,))
+        cur.execute("SELECT total_calories, daily_calories, last_snack FROM pf_users WHERE user_id = %s", (user.id,))
         u = cur.fetchone()
-        if u and u[1] and now - u[1] < timedelta(hours=1):
-            rem = timedelta(hours=1) - (now - u[1])
+        
+        if u and u[2] and now - u[2] < timedelta(hours=1):
+            rem = timedelta(hours=1) - (now - u[2])
             return await update.message.reply_text(f"⌛️ Digesting... {int(rem.total_seconds()//60)}m left.")
         
         item = random.choice(foods)
         cal_val = item['calories']
-        c_total, c_daily = (u[0] or 0, u[2] or 0) if u else (0, 0)
+        c_total, c_daily = (u[0] or 0, u[1] or 0) if u else (0, 0)
         
-        # Apply changes with floors to prevent negative totals
-        new_total = max(0, c_total + cal_val)
-        new_daily = max(0, c_daily + cal_val)
+        new_daily = c_daily + cal_val  # Allows negative
+        new_total = max(0, c_total + cal_val) # Lifetime floor at 0
 
         cur.execute("""
             INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack, ping_sent)
             VALUES (%s, %s, %s, %s, %s, FALSE)
             ON CONFLICT (user_id) DO UPDATE SET
-            username=EXCLUDED.username, total_calories=EXCLUDED.total_calories, 
-            daily_calories=EXCLUDED.daily_calories, last_snack=EXCLUDED.last_snack, ping_sent=FALSE
-        """, (user.id, user.username or user.first_name, new_total, new_daily, now))
+            username=EXCLUDED.username, total_calories=%s, 
+            daily_calories=%s, last_snack=%s, ping_sent=FALSE
+        """, (user.id, user.username or user.first_name, new_total, new_daily, now, new_total, new_daily, now))
+        
         conn.commit(); cur.close(); conn.close()
-
-        # Polished signage
         sign = "+" if cal_val > 0 else ""
         await update.message.reply_text(f"🍔 **{item['name']}** ({sign}{cal_val:,} Cal)\n🔥 Daily: {new_daily:,}")
-    except Exception as e: 
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
         logger.error(f"Snack Error: {e}")
         await update.message.reply_text("❌ Kitchen Busy.")
 
@@ -225,6 +217,7 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    conn = None
     try:
         conn = get_db_connection(); cur = conn.cursor()
         cur.execute("SELECT id, sender_name, item_name, item_type, value, sender_id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE ORDER BY id DESC LIMIT 1", (user_id,))
@@ -233,9 +226,13 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         g_id, s_name, i_name, i_type, val, s_id = row
         cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (g_id,))
+        
+        # Negative daily allowed, total floors at 0
         cur.execute("""
-            UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories + %s), 
-            total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s
+            UPDATE pf_users SET 
+            daily_calories = daily_calories + %s, 
+            total_calories = GREATEST(0, total_calories + %s) 
+            WHERE user_id = %s
         """, (val, val, user_id))
         
         col = "gifts_sent_val" if i_type == "PROTEIN" else "sabotage_val"
@@ -245,22 +242,78 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sign = "+" if val > 0 else ""
         header = "💉 **FUEL INJECTED!**" if i_type == "PROTEIN" else "💀 **TOXIN DETECTED!**"
         await update.message.reply_text(f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {sign}{val:,} Cal")
-    except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        await update.message.reply_text(f"⚠️ Error: {e}")
 
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection(); cur = conn.cursor()
+    # Trash fee can make daily negative
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE receiver_id = %s AND is_opened = FALSE", (user_id,))
-    cur.execute("UPDATE pf_users SET daily_calories = GREATEST(0, daily_calories - 100) WHERE user_id = %s", (user_id,))
+    cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 100 WHERE user_id = %s", (user_id,))
     conn.commit(); cur.close(); conn.close()
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
 # ==========================================
-# 7. REPORTS & LEADERBOARDS
+# 7. ADMIN REWARD SYSTEM
+# ==========================================
+async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    # Dynamic Admin Check
+    member = await context.bot.get_chat_member(chat_id, user.id)
+    if member.status not in ['administrator', 'creator']:
+        return await update.message.reply_text("🚫 **UNAUTHORIZED:** Verification clearance required.")
+
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("💡 **HOW TO:** Reply to a user's raid link with `/reward`.")
+
+    receiver = update.message.reply_to_message.from_user
+    
+    # Balanced Probability Roll
+    roll = random.random()
+    if roll < 0.85:
+        t_name, t_min, t_max, t_icon = "SCOUT SNACK", 300, 700, "🍪"
+    elif roll < 0.97:
+        t_name, t_min, t_max, t_icon = "RAIDER'S FEAST", 1000, 1800, "🍖"
+    else:
+        t_name, t_min, t_max, t_icon = "ALPHA RATION", 2500, 3500, "🔥"
+
+    bonus = random.randint(t_min, t_max)
+    conn = None
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("""
+            UPDATE pf_users 
+            SET daily_calories = daily_calories + %s, 
+                total_calories = total_calories + %s 
+            WHERE user_id = %s
+        """, (bonus, bonus, receiver.id))
+        conn.commit(); cur.close(); conn.close()
+
+        msg = (
+            f"🎯 **RAID VERIFIED**\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"User: @{escape_name(receiver.username or receiver.first_name)}\n"
+            f"Reward: **{t_icon} {t_name}**\n"
+            f"Calories: +{bonus:,}\n"
+            f"Verified by: @{escape_name(user.username or user.first_name)}\n"
+            f"━━━━━━━━━━━━━━"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown', reply_to_message_id=update.message.reply_to_message.message_id)
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        await update.message.reply_text("❌ Database error during reward.")
+
+# ==========================================
+# 8. REPORTS & LEADERBOARDS
 # ==========================================
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT username, daily_calories FROM pf_users WHERE daily_calories > 0 ORDER BY daily_calories DESC LIMIT 10")
+    # Updated: Show negative daily earners too, as they are part of the frenzy
+    cur.execute("SELECT username, daily_calories FROM pf_users WHERE daily_calories != 0 ORDER BY daily_calories DESC LIMIT 15")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("🍔 **NO MUNCHERS YET TODAY.**")
     text = "🔥 **DAILY FEEDING FRENZY** 🔥\n━━━━━━━━━━━━━━\n"
@@ -311,6 +364,7 @@ async def set_bot_commands(application):
         ("gift", "Dispatch a Mystery Shipment [Reply]"),
         ("open", "Unbox your pending shipment"),
         ("trash", "Dump the contraband (Costs 100 Cal)"),
+        ("reward", "Admins: Grant calories for raids [Reply]"),
         ("status", "Review your medical vitals"),
         ("daily", "The Daily Feeding Frenzy"),
         ("leaderboard", "The Hall of Infinite Girth"),
@@ -328,6 +382,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("gift", gift))
     app.add_handler(CommandHandler("open", open_gift))
     app.add_handler(CommandHandler("trash", trash_gift))
+    app.add_handler(CommandHandler("reward", reward))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("daily", daily))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
