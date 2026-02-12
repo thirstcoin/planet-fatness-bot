@@ -51,9 +51,9 @@ def escape_name(name):
     return name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
 # ==========================================
-# 3. DATABASE INITIALIZATION
+# 3. DATABASE INITIALIZATION (WITH AUTO-PURGE)
 # ==========================================
-def init_db():
+def init_db(bot_id=None):
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
@@ -78,6 +78,12 @@ def init_db():
             value INTEGER, flavor_text TEXT, is_opened BOOLEAN DEFAULT FALSE
         );
     """)
+    
+    # 🧹 CLEANUP: Erase any gifts currently sitting on the Bot's ID
+    if bot_id:
+        cur.execute("DELETE FROM pf_gifts WHERE receiver_id = %s", (bot_id,))
+        logger.info(f"🧹 Kitchen Purge: Cleared shipments for Bot ID {bot_id}")
+        
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
@@ -181,17 +187,30 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
     if not update.message.reply_to_message:
-        return await update.message.reply_text("💡 You must **REPLY** to a message with /gift to drop a shipment!")
+        return await update.message.reply_text("💡 You must **REPLY** to a message with /gift!")
     
     receiver = update.message.reply_to_message.from_user
     
-    # NEW: Bot Shield Logic
+    # 🛡️ THE CHEF'S PROTECTION (Reflects Poison/Devours Protein)
     if receiver.id == context.bot.id:
         is_poison = random.choice([True, False])
         if is_poison:
-            return await update.message.reply_text(f"💀 **THE CHEF IS ANGRY!**\nYou tried to poison the kitchen, {escape_name(sender.first_name)}? I've reflected the toxin back at you. 反射")
+            penalty = 1500
+            conn = get_db_connection(); cur = conn.cursor()
+            cur.execute("""
+                UPDATE pf_users SET 
+                daily_calories = daily_calories - %s,
+                total_calories = GREATEST(0, total_calories - %s)
+                WHERE user_id = %s
+            """, (penalty, penalty, sender.id))
+            conn.commit(); cur.close(); conn.close()
+            return await update.message.reply_text(
+                f"💀 **THE CHEF REFLECTS!**\n"
+                f"Trying to poison the kitchen, {escape_name(sender.first_name)}?\n"
+                f"Toxin bounced back. **-{penalty:,} Cal** deducted. 反射"
+            )
         else:
-            return await update.message.reply_text(f"😋 **OM NOM NOM...**\nThe Chef devours your offering. You get nothing. Keep cooking.")
+            return await update.message.reply_text(f"😋 **OM NOM NOM...**\nThe Chef devours your offering. Delicious. You get nothing.")
 
     if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
 
@@ -209,8 +228,8 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
 
-        is_poison = random.choice([True, False])
-        if is_poison:
+        is_poison_roll = random.choice([True, False])
+        if is_poison_roll:
             item = random.choice(PUNISHMENTS); val = random.randint(item['v'][0], item['v'][1]); i_type = "POISON"
         else:
             item = random.choice(foods); val = item.get('calories', 500); i_type = "PROTEIN"
@@ -236,7 +255,6 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_id, s_name, i_name, i_type, val, s_id = row
         cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (g_id,))
         
-        # Daily allows negative, Total floors at 0
         cur.execute("""
             UPDATE pf_users SET 
             daily_calories = daily_calories + %s, 
@@ -258,7 +276,6 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection(); cur = conn.cursor()
-    # Trash fee makes daily negative
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE receiver_id = %s AND is_opened = FALSE", (user_id,))
     cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 100 WHERE user_id = %s", (user_id,))
     conn.commit(); cur.close(); conn.close()
@@ -272,9 +289,9 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     member = await context.bot.get_chat_member(chat_id, user.id)
     if member.status not in ['administrator', 'creator']:
-        return await update.message.reply_text("🚫 **UNAUTHORIZED:** Verification clearance required.")
+        return await update.message.reply_text("🚫 **UNAUTHORIZED.**")
     if not update.message.reply_to_message:
-        return await update.message.reply_text("💡 **HOW TO:** Reply to a user's raid link with `/reward`.")
+        return await update.message.reply_text("💡 **REPLY** to a user with /reward.")
     
     receiver = update.message.reply_to_message.from_user
     roll = random.random()
@@ -365,7 +382,14 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(cmds)
 
 if __name__ == "__main__":
-    init_db()
+    # Try to extract the Bot's ID from the token for the cleanup
+    try:
+        b_id = int(TOKEN.split(':')[0])
+    except:
+        b_id = None
+        
+    init_db(b_id)
+    
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("hack", hack))
