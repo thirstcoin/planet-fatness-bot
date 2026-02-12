@@ -134,8 +134,8 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cal_val = item['calories']
         c_total, c_daily = (u[0] or 0, u[1] or 0) if u else (0, 0)
         
-        new_daily = c_daily + cal_val  # Allows negative
-        new_total = max(0, c_total + cal_val) # Lifetime floor at 0
+        new_daily = c_daily + cal_val
+        new_total = max(0, c_total + cal_val)
 
         cur.execute("""
             INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack, ping_sent)
@@ -184,6 +184,15 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("💡 You must **REPLY** to a message with /gift to drop a shipment!")
     
     receiver = update.message.reply_to_message.from_user
+    
+    # NEW: Bot Shield Logic
+    if receiver.id == context.bot.id:
+        is_poison = random.choice([True, False])
+        if is_poison:
+            return await update.message.reply_text(f"💀 **THE CHEF IS ANGRY!**\nYou tried to poison the kitchen, {escape_name(sender.first_name)}? I've reflected the toxin back at you. 反射")
+        else:
+            return await update.message.reply_text(f"😋 **OM NOM NOM...**\nThe Chef devours your offering. You get nothing. Keep cooking.")
+
     if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
 
     try:
@@ -227,7 +236,7 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         g_id, s_name, i_name, i_type, val, s_id = row
         cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE id = %s", (g_id,))
         
-        # Negative daily allowed, total floors at 0
+        # Daily allows negative, Total floors at 0
         cur.execute("""
             UPDATE pf_users SET 
             daily_calories = daily_calories + %s, 
@@ -249,7 +258,7 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection(); cur = conn.cursor()
-    # Trash fee can make daily negative
+    # Trash fee makes daily negative
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE receiver_id = %s AND is_opened = FALSE", (user_id,))
     cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 100 WHERE user_id = %s", (user_id,))
     conn.commit(); cur.close(); conn.close()
@@ -261,18 +270,13 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
-
-    # Dynamic Admin Check
     member = await context.bot.get_chat_member(chat_id, user.id)
     if member.status not in ['administrator', 'creator']:
         return await update.message.reply_text("🚫 **UNAUTHORIZED:** Verification clearance required.")
-
     if not update.message.reply_to_message:
         return await update.message.reply_text("💡 **HOW TO:** Reply to a user's raid link with `/reward`.")
-
-    receiver = update.message.reply_to_message.from_user
     
-    # Balanced Probability Roll
+    receiver = update.message.reply_to_message.from_user
     roll = random.random()
     if roll < 0.85:
         t_name, t_min, t_max, t_icon = "SCOUT SNACK", 300, 700, "🍪"
@@ -286,33 +290,20 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         conn = get_db_connection(); cur = conn.cursor()
         cur.execute("""
-            UPDATE pf_users 
-            SET daily_calories = daily_calories + %s, 
-                total_calories = total_calories + %s 
-            WHERE user_id = %s
+            UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s
         """, (bonus, bonus, receiver.id))
         conn.commit(); cur.close(); conn.close()
-
-        msg = (
-            f"🎯 **RAID VERIFIED**\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"User: @{escape_name(receiver.username or receiver.first_name)}\n"
-            f"Reward: **{t_icon} {t_name}**\n"
-            f"Calories: +{bonus:,}\n"
-            f"Verified by: @{escape_name(user.username or user.first_name)}\n"
-            f"━━━━━━━━━━━━━━"
-        )
+        msg = (f"🎯 **RAID VERIFIED**\n━━━━━━━━━━━━━━\nUser: @{escape_name(receiver.username or receiver.first_name)}\nReward: **{t_icon} {t_name}**\nCalories: +{bonus:,}\nVerified by: @{escape_name(user.username or user.first_name)}\n━━━━━━━━━━━━━━")
         await update.message.reply_text(msg, parse_mode='Markdown', reply_to_message_id=update.message.reply_to_message.message_id)
     except Exception as e:
         if conn: conn.rollback(); conn.close()
-        await update.message.reply_text("❌ Database error during reward.")
+        await update.message.reply_text("❌ Database error.")
 
 # ==========================================
 # 8. REPORTS & LEADERBOARDS
 # ==========================================
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
-    # Updated: Show negative daily earners too, as they are part of the frenzy
     cur.execute("SELECT username, daily_calories FROM pf_users WHERE daily_calories != 0 ORDER BY daily_calories DESC LIMIT 15")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("🍔 **NO MUNCHERS YET TODAY.**")
@@ -376,7 +367,6 @@ async def set_bot_commands(application):
 if __name__ == "__main__":
     init_db()
     app = ApplicationBuilder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("snack", snack))
     app.add_handler(CommandHandler("hack", hack))
     app.add_handler(CommandHandler("gift", gift))
