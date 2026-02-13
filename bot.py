@@ -51,7 +51,7 @@ def escape_name(name):
     return name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
 # ==========================================
-# 3. DATABASE INITIALIZATION (WITH AUTO-PURGE)
+# 3. DATABASE INITIALIZATION
 # ==========================================
 def init_db(bot_id=None):
     conn = get_db_connection(); cur = conn.cursor()
@@ -79,7 +79,6 @@ def init_db(bot_id=None):
         );
     """)
     
-    # 🧹 CLEANUP: Erase any gifts currently sitting on the Bot's ID
     if bot_id:
         cur.execute("DELETE FROM pf_gifts WHERE receiver_id = %s", (bot_id,))
         logger.info(f"🧹 Kitchen Purge: Cleared shipments for Bot ID {bot_id}")
@@ -138,8 +137,9 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         item = random.choice(foods)
         cal_val = item['calories']
-        c_total, c_daily = (u[0] or 0, u[1] or 0) if u else (0, 0)
+        gif_url = item.get('gif') # Pull GIF URL if it exists in JSON
         
+        c_total, c_daily = (u[0] or 0, u[1] or 0) if u else (0, 0)
         new_daily = c_daily + cal_val
         new_total = max(0, c_total + cal_val)
 
@@ -153,7 +153,13 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         conn.commit(); cur.close(); conn.close()
         sign = "+" if cal_val > 0 else ""
-        await update.message.reply_text(f"🍔 **{item['name']}** ({sign}{cal_val:,} Cal)\n🔥 Daily: {new_daily:,}")
+        caption = f"🍔 **{item['name']}** ({sign}{cal_val:,} Cal)\n🔥 Daily: {new_daily:,}"
+
+        if gif_url:
+            await update.message.reply_animation(animation=gif_url, caption=caption, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(caption, parse_mode='Markdown')
+
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         logger.error(f"Snack Error: {e}")
@@ -191,7 +197,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     receiver = update.message.reply_to_message.from_user
     
-    # 🛡️ THE CHEF'S PROTECTION (Reflects Poison/Devours Protein)
     if receiver.id == context.bot.id:
         is_poison = random.choice([True, False])
         if is_poison:
@@ -282,7 +287,7 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
 # ==========================================
-# 7. ADMIN REWARD SYSTEM
+# 7. ENHANCED ADMIN REWARD SYSTEM
 # ==========================================
 async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -290,10 +295,26 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member = await context.bot.get_chat_member(chat_id, user.id)
     if member.status not in ['administrator', 'creator']:
         return await update.message.reply_text("🚫 **UNAUTHORIZED.**")
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("💡 **REPLY** to a user with /reward.")
-    
-    receiver = update.message.reply_to_message.from_user
+
+    receiver_id, receiver_name = None, None
+
+    # Logic: Priority to Reply, then to @Username
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        receiver_id, receiver_name = target.id, target.username or target.first_name
+    elif context.args:
+        input_name = context.args[0].replace("@", "")
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("SELECT user_id, username FROM pf_users WHERE username ILIKE %s", (input_name,))
+        res = cur.fetchone()
+        cur.close(); conn.close()
+        if res:
+            receiver_id, receiver_name = res
+        else:
+            return await update.message.reply_text(f"❌ **USER NOT FOUND:** '{input_name}' is not in the database.")
+    else:
+        return await update.message.reply_text("💡 **HOW TO:** Reply to a user OR type `/reward @username`.")
+
     roll = random.random()
     if roll < 0.85:
         t_name, t_min, t_max, t_icon = "SCOUT SNACK", 300, 700, "🍪"
@@ -308,10 +329,10 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db_connection(); cur = conn.cursor()
         cur.execute("""
             UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s
-        """, (bonus, bonus, receiver.id))
+        """, (bonus, bonus, receiver_id))
         conn.commit(); cur.close(); conn.close()
-        msg = (f"🎯 **RAID VERIFIED**\n━━━━━━━━━━━━━━\nUser: @{escape_name(receiver.username or receiver.first_name)}\nReward: **{t_icon} {t_name}**\nCalories: +{bonus:,}\nVerified by: @{escape_name(user.username or user.first_name)}\n━━━━━━━━━━━━━━")
-        await update.message.reply_text(msg, parse_mode='Markdown', reply_to_message_id=update.message.reply_to_message.message_id)
+        msg = (f"🎯 **RAID VERIFIED**\n━━━━━━━━━━━━━━\nUser: @{escape_name(receiver_name)}\nReward: **{t_icon} {t_name}**\nCalories: +{bonus:,}\nVerified by: @{escape_name(user.username or user.first_name)}\n━━━━━━━━━━━━━━")
+        await update.message.reply_text(msg, parse_mode='Markdown')
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         await update.message.reply_text("❌ Database error.")
@@ -372,7 +393,7 @@ async def set_bot_commands(application):
         ("gift", "Dispatch a Mystery Shipment [Reply]"),
         ("open", "Unbox your pending shipment"),
         ("trash", "Dump the contraband (Costs 100 Cal)"),
-        ("reward", "Admins: Grant calories for raids [Reply]"),
+        ("reward", "Admins: Grant calories for raids [Reply or @]"),
         ("status", "Review your medical vitals"),
         ("daily", "The Daily Feeding Frenzy"),
         ("leaderboard", "The Hall of Infinite Girth"),
@@ -382,7 +403,6 @@ async def set_bot_commands(application):
     await application.bot.set_my_commands(cmds)
 
 if __name__ == "__main__":
-    # Try to extract the Bot's ID from the token for the cleanup
     try:
         b_id = int(TOKEN.split(':')[0])
     except:
