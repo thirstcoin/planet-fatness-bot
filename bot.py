@@ -196,7 +196,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
-# 6. MYSTERY GIFT LOGIC (WITH COMMUNITY GOAL)
+# 6. MYSTERY GIFT LOGIC (HARDENED COOLDOWN)
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
@@ -204,57 +204,61 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("💡 You must **REPLY** to a message with /gift!")
     
     receiver = update.message.reply_to_message.from_user
-    
-    # 🤖 CHEF INTERACTION (20K GOAL)
-    if receiver.id == context.bot.id:
-        conn = get_db_connection(); cur = conn.cursor()
-        outcome = random.choices([1, 2, 3], weights=[30, 40, 30], k=1)[0]
-        
-        if outcome == 1:
-            # 💀 REFLECT
-            penalty = 1500
-            cur.execute("UPDATE pf_users SET daily_calories = daily_calories - %s, total_calories = GREATEST(0, total_calories - %s) WHERE user_id = %s", (penalty, penalty, sender.id))
-            conn.commit(); cur.close(); conn.close()
-            return await update.message.reply_text(f"💀 **THE CHEF REFLECTS!**\nToxin bounced back. **-{penalty:,} Cal** deducted. 反射")
+    conn = get_db_connection(); cur = conn.cursor()
 
-        elif outcome == 2:
-            # 😋 DEVOUR
-            conn.commit(); cur.close(); conn.close()
-            return await update.message.reply_text(f"😋 **OM NOM NOM...**\nThe Chef devours your offering. Nothing added to the meter.")
-
-        else:
-            # 🍔 ACCEPT
-            item = random.choice(foods)
-            cal_val = item.get('calories', 500)
-            cur.execute("UPDATE pf_users SET total_calories = total_calories + %s WHERE user_id = 0 RETURNING total_calories", (cal_val,))
-            cur_val = cur.fetchone()[0]
-            
-            if cur_val >= METER_GOAL:
-                jackpot = random.randint(10000, 20000)
-                cur.execute("UPDATE pf_users SET total_calories = 0 WHERE user_id = 0")
-                cur.execute("UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s", (jackpot, jackpot, sender.id))
-                conn.commit(); cur.close(); conn.close()
-                return await update.message.reply_text(f"💥 **KITCHEN OVERLOAD!** 💥\nGoal of {METER_GOAL:,} reached!\n\n🏆 Sniper: @{escape_name(sender.username or sender.first_name)}\n💰 Jackpot: **+{jackpot:,} Cal** injected!\n♻️ Meter Resetting...")
-            else:
-                conn.commit(); cur.close(); conn.close()
-                bar = get_progress_bar(cur_val)
-                return await update.message.reply_text(f"✅ **CHEF FED.**\nItem: {item['name']} (+{cal_val} Cal)\nKitchen Saturation:\n{bar}")
-
-    # Standard User-to-User Gift Logic
-    if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
     try:
-        conn = get_db_connection(); cur = conn.cursor()
-        cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
-        if cur.fetchone():
-            conn.close()
-            return await update.message.reply_text(f"📦 **DOCK BLOCKED:** {escape_name(receiver.first_name)} has an unopened shipment.")
-
+        # --- AIRTIGHT COOLDOWN CHECK ---
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=1):
             rem = timedelta(hours=1) - (now - res[0])
-            conn.close()
+            cur.close(); conn.close()
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
+
+        # --- INSTANT LOCK ---
+        cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
+        conn.commit()
+
+        # 🤖 CHEF INTERACTION (20K GOAL)
+        if receiver.id == context.bot.id:
+            outcome = random.choices([1, 2, 3], weights=[30, 40, 30], k=1)[0]
+            
+            if outcome == 1:
+                # 💀 REFLECT
+                penalty = 1500
+                cur.execute("UPDATE pf_users SET daily_calories = daily_calories - %s, total_calories = GREATEST(0, total_calories - %s) WHERE user_id = %s", (penalty, penalty, sender.id))
+                conn.commit()
+                return await update.message.reply_text(f"💀 **THE CHEF REFLECTS!**\nToxin bounced back. **-{penalty:,} Cal** deducted. 反射")
+
+            elif outcome == 2:
+                # 😋 DEVOUR
+                return await update.message.reply_text(f"😋 **OM NOM NOM...**\nThe Chef devours your offering. Nothing added to the meter.")
+
+            else:
+                # 🍔 ACCEPT
+                item = random.choice(foods)
+                cal_val = item.get('calories', 500)
+                cur.execute("UPDATE pf_users SET total_calories = total_calories + %s WHERE user_id = 0 RETURNING total_calories", (cal_val,))
+                cur_val = cur.fetchone()[0]
+                
+                if cur_val >= METER_GOAL:
+                    jackpot = random.randint(10000, 20000)
+                    cur.execute("UPDATE pf_users SET total_calories = 0 WHERE user_id = 0")
+                    cur.execute("UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s", (jackpot, jackpot, sender.id))
+                    conn.commit()
+                    return await update.message.reply_text(f"💥 **KITCHEN OVERLOAD!** 💥\nGoal of {METER_GOAL:,} reached!\n\n🏆 Sniper: @{escape_name(sender.username or sender.first_name)}\n💰 Jackpot: **+{jackpot:,} Cal** injected!\n♻️ Meter Resetting...")
+                else:
+                    conn.commit()
+                    bar = get_progress_bar(cur_val)
+                    return await update.message.reply_text(f"✅ **CHEF FED.**\nItem: {item['name']} (+{cal_val} Cal)\nKitchen Saturation:\n{bar}")
+
+        # Standard User-to-User Gift Logic
+        if receiver.id == sender.id: 
+            return await update.message.reply_text("🚫 Self-gifting is prohibited.")
+        
+        cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
+        if cur.fetchone():
+            return await update.message.reply_text(f"📦 **DOCK BLOCKED:** {escape_name(receiver.first_name)} has an unopened shipment.")
 
         is_poison_roll = random.choice([True, False])
         if is_poison_roll:
@@ -266,10 +270,14 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) 
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
-        cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
         await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
-    except Exception as e: await update.message.reply_text(f"⚠️ Error: {e}")
+    
+    except Exception as e:
+        logger.error(f"Gift Error: {e}")
+        await update.message.reply_text("⚠️ Kitchen glitch.")
+    finally:
+        cur.close(); conn.close()
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
