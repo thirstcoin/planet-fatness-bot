@@ -106,8 +106,14 @@ async def automated_reset_task(application):
                     winner = cur.fetchone()
                     if winner:
                         cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
+                
+                # --- WEEKLY WINNER PURGE ---
+                # Keeps only winners from the last 7 days for Saturday Airdrops
+                cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
+                
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
                 conn.commit(); cur.close(); conn.close()
+                logger.info("🧹 Daily Reset & 7-Day Winner Purge Complete.")
             except Exception as e: logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
         await asyncio.sleep(30)
