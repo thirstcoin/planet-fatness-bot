@@ -67,7 +67,7 @@ def init_db(bot_id=None):
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
             total_calories BIGINT DEFAULT 0, daily_calories INTEGER DEFAULT 0,
-            daily_clog INTEGER DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
+            daily_clog NUMERIC DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
             last_snack TIMESTAMP, last_hack TIMESTAMP,
             ping_sent BOOLEAN DEFAULT TRUE, last_gift_sent TIMESTAMP,
             sabotage_val BIGINT DEFAULT 0, gifts_sent_val BIGINT DEFAULT 0
@@ -108,7 +108,6 @@ async def automated_reset_task(application):
                         cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
                 
                 # --- WEEKLY WINNER PURGE ---
-                # Keeps only winners from the last 7 days for Saturday Airdrops
                 cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
                 
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
@@ -185,20 +184,28 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         cur.execute("SELECT daily_clog, is_icu, last_hack FROM pf_users WHERE user_id = %s", (user_id,))
         u = cur.fetchone()
-        clog, is_icu, l_hack = (u[0] or 0, u[1], u[2]) if u else (0, False, None)
+        clog, is_icu, l_hack = (float(u[0]) if u else 0.0, u[1] if u else False, u[2] if u else None)
         cd = timedelta(hours=2) if is_icu else timedelta(hours=1)
         if l_hack and now - l_hack < cd:
             rem = cd - (now - l_hack)
             return await update.message.reply_text(f"🏥 {'ICU' if is_icu else 'Recovery'}: {int(rem.total_seconds()//60)}m left.")
+        
         h = random.choice(hacks)
-        gain = random.randint(int(h.get("min_clog", 1)), int(h.get("max_clog", 5)))
+        gain = float(random.randint(int(h.get("min_clog", 1)), int(h.get("max_clog", 5))))
+        
+        # 🧪 THE .5 MUTATION (10% Chance)
+        bonus_text = ""
+        if random.random() < 0.10:
+            gain += 0.5
+            bonus_text = "🧬 **CELLULAR MUTATION:** +.5% extra clog!\n"
+            
         new_c = clog + gain
         if new_c >= 100:
             cur.execute("UPDATE pf_users SET daily_clog=0, is_icu=True, last_hack=%s WHERE user_id=%s", (now, user_id))
             await update.message.reply_text(f"💀 **FLATLINE!** Lab failure. ICU for 2 hours.")
         else:
-            cur.execute("UPDATE pf_users SET daily_clog=daily_clog + %s, is_icu=False, last_hack=%s WHERE user_id=%s", (gain, now, user_id))
-            await update.message.reply_text(f"🩺 **HACK SUCCESS:** {h.get('name')}\n📈 Clog: {new_c}% (+{gain}%)")
+            cur.execute("UPDATE pf_users SET daily_clog=%s, is_icu=False, last_hack=%s WHERE user_id=%s", (new_c, now, user_id))
+            await update.message.reply_text(f"🩺 **HACK SUCCESS:** {h.get('name')}\n{bonus_text}📈 Clog: {new_c:.1f}% (+{gain}%)")
         conn.commit()
     finally:
         cur.close(); conn.close()
@@ -342,7 +349,7 @@ async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT username, daily_clog, is_icu FROM pf_users WHERE daily_clog > 0 ORDER BY daily_clog DESC LIMIT 10")
     rows = cur.fetchall(); cur.close(); conn.close()
     if not rows: return await update.message.reply_text("🧪 **THE LAB IS CLEAN.**")
-    text = "🧪 **BEATS FROM THE CARDIAC WARD** 🧪\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]}% {'💀' if r[2] else ''}" for i, r in enumerate(rows)])
+    text = "🧪 **BEATS FROM THE CARDIAC WARD** 🧪\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {float(r[1]):.1f}% {'💀' if r[2] else ''}" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,7 +373,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close(); conn.close()
     if not u: return await update.message.reply_text("❌ No records.")
     bar = get_progress_bar(meter_val)
-    msg = (f"📋 *VITALS: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {u[1]:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {u[2]}%\n━━━━━━━━━━━━━━\n👨‍🍳 **KITCHEN SATIETY:**\n{bar}")
+    msg = (f"📋 *VITALS: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n🔥 Daily: {u[1]:,} Cal\n📈 Total: {u[0]:,} Cal\n🩸 Clog: {float(u[2]):.1f}%\n━━━━━━━━━━━━━━\n👨‍🍳 **KITCHEN SATIETY:**\n{bar}")
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def set_bot_commands(application):
