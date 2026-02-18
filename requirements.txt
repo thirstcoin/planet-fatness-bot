@@ -1,3 +1,6 @@
 python-telegram-bot
 psycopg2-binary
 flask
+google-generativeai
+Pillow
+requests
