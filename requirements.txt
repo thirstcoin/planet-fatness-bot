@@ -1,6 +1,6 @@
 python-telegram-bot
 psycopg2-binary
 flask
-google-generativeai
+google-genai==0.4.0
 Pillow
 requests
