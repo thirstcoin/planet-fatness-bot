@@ -5,6 +5,14 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram.error import Forbidden, BadRequest
 
+# --- SIDE CAR IMPORT ---
+try:
+    from phat_engine import PhatEngine
+    phat_processor = PhatEngine()
+except ImportError:
+    phat_processor = None
+    logging.error("❌ phat_engine.py not found. /phatme will be disabled.")
+
 # ==========================================
 # 1. ENGINE & WEB SERVER
 # ==========================================
@@ -205,6 +213,55 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         cur.close(); conn.close()
 
+# --- NEW PHAT PFP COMMAND (WITH COOLDOWN) ---
+async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not phat_processor:
+        return await update.message.reply_text("❌ AI Engine offline.")
+    
+    user, now = update.effective_user, datetime.utcnow()
+    conn = get_db_connection(); cur = conn.cursor()
+    
+    try:
+        # Check for 24-hour cooldown using last_gift_sent column
+        cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (user.id,))
+        res = cur.fetchone()
+        if res and res[0] and now - res[0] < timedelta(hours=24):
+            rem = timedelta(hours=24) - (now - res[0])
+            return await update.message.reply_text(f"⌛️ **AI COOLING:** Transformation is taxing. Try again in {int(rem.total_seconds()//3600)}h {int((rem.total_seconds()//60)%60)}m.")
+
+        photos = await context.bot.get_user_profile_photos(user.id)
+        if not photos.photos:
+            return await update.message.reply_text("❌ No profile picture detected.")
+
+        status_msg = await update.message.reply_text("🧪 Processing $PHAT DNA... Please wait.")
+
+        file_id = photos.photos[0][-1].file_id
+        file = await context.bot.get_file(file_id)
+        photo_bytes = await file.download_as_bytearray()
+
+        result_img_bytes = phat_processor.generate_phat_image(photo_bytes)
+
+        if result_img_bytes:
+            # Update cooldown timestamp
+            cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, user.id))
+            conn.commit()
+            
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=result_img_bytes,
+                caption=f"🏆 **TRANSFORMATION COMPLETE**\nWelcome to the heavyweights, @{escape_name(user.username or user.first_name)}! $PHAT",
+                parse_mode='Markdown'
+            )
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text("⚠️ AI synthesis failed. The lab is at capacity.")
+            
+    except Exception as e:
+        logger.error(f"PhatMe Error: {e}")
+        await update.message.reply_text("❌ Connection to Planet Fatness lost.")
+    finally:
+        cur.close(); conn.close()
+
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
     if not update.message.reply_to_message:
@@ -212,6 +269,7 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     receiver = update.message.reply_to_message.from_user
     conn = get_db_connection(); cur = conn.cursor()
     try:
+        # Note: Gift and PhatMe share this column to prevent spamming the bot's heavy actions
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=1):
@@ -353,7 +411,6 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🏆 **THE 8PM AIRDROP LEGENDS** 🏆\n━━━━━━━━━━━━━━\n"
     for r in rows:
         icon = "🍔" if r[0] == 'DAILY PHATTEST' else "🧪"
-        # Determine format: if it's clog (score < 101 likely) vs big calories
         score_val = f"{r[2]:.1f}%" if r[0] == 'TOP HACKER' else f"{int(r[2]):,}"
         text += f"{icon} `{r[3].strftime('%m/%d')}` | **{r[0]}**: {escape_name(r[1])} ({score_val})\n"
     await update.message.reply_text(text, parse_mode='Markdown')
@@ -372,7 +429,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def set_bot_commands(application):
-    cmds = [("snack", "Devour feast"), ("hack", "Infiltrate Lab"), ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), ("reward", "Admin Reward"), ("status", "Vitals"), ("daily", "Daily Rank"), ("leaderboard", "Hall of Girth"), ("clogboard", "Cardiac Ward"), ("winners", "Airdrop Legends")]
+    cmds = [("snack", "Devour feast"), ("hack", "Infiltrate Lab"), ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), ("phatme", "AI PFP Transformation"), ("reward", "Admin Reward"), ("status", "Vitals"), ("daily", "Daily Rank"), ("leaderboard", "Hall of Girth"), ("clogboard", "Cardiac Ward"), ("winners", "Airdrop Legends")]
     await application.bot.set_my_commands(cmds)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -384,8 +441,15 @@ if __name__ == "__main__":
     init_db(b_id)
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_error_handler(error_handler)
-    for c, f in [("snack", snack), ("hack", hack), ("gift", gift), ("open", open_gift), ("trash", trash_gift), ("reward", reward), ("status", status), ("daily", daily), ("leaderboard", leaderboard), ("clogboard", clogboard), ("winners", winners)]:
+    handlers = [
+        ("snack", snack), ("hack", hack), ("gift", gift), ("open", open_gift), 
+        ("trash", trash_gift), ("reward", reward), ("status", status), 
+        ("daily", daily), ("leaderboard", leaderboard), ("clogboard", clogboard), 
+        ("winners", winners), ("phatme", phatme)
+    ]
+    for c, f in handlers:
         app.add_handler(CommandHandler(c, f))
+        
     async def post_init(application):
         await set_bot_commands(application)
         application.create_task(automated_reset_task(application))
