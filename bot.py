@@ -20,7 +20,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
-# 2026 STABILITY FIX: Global set to prevent asyncio tasks from being garbage collected.
 running_ai_tasks = set()
 
 @flask_app.route("/")
@@ -74,7 +73,6 @@ def get_progress_bar(current, total=METER_GOAL):
 # ==========================================
 def init_db(bot_id=None):
     conn = get_db_connection(); cur = conn.cursor()
-    # Note: ping_sent is now used as a TIMESTAMP for the /phatme cooldown
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
@@ -128,18 +126,14 @@ async def automated_reset_task(application):
         await asyncio.sleep(30)
 
 async def check_pings(application):
-    # Standard reminder logic using last_snack
     while True:
         await asyncio.sleep(60)
         ago = datetime.utcnow() - timedelta(hours=1)
         conn = None
         try:
             conn = get_db_connection(); cur = conn.cursor()
-            # We filter users who haven't eaten in an hour
             cur.execute("SELECT user_id FROM pf_users WHERE last_snack <= %s OR last_snack IS NULL", (ago,))
             users_to_ping = cur.fetchall()
-            # Logic for pings can be restored here if needed, 
-            # though /phatme now uses the ping_sent column for its timer.
             cur.close(); conn.close()
         except Exception as e:
             if conn: conn.close()
@@ -195,7 +189,6 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         h = random.choice(hacks)
         gain = float(random.randint(int(h.get("min_clog", 1)), int(h.get("max_clog", 5))))
-        
         bonus_text = ""
         if random.random() < 0.10:
             gain += 0.5
@@ -213,7 +206,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 6. PHAT PFP GENERATOR (REPURPOSED COLUMN)
+# 6. PHAT PFP GENERATOR
 # ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
@@ -223,7 +216,6 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     
     try:
-        # Check independent timer in ping_sent column
         cur.execute("SELECT ping_sent FROM pf_users WHERE user_id = %s", (user.id,))
         res = cur.fetchone()
         if res and res[0] and isinstance(res[0], datetime) and now - res[0] < timedelta(hours=24):
@@ -248,7 +240,6 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_img_bytes = await task
 
         if result_img_bytes:
-            # Update the independent phatme timer
             cur.execute("UPDATE pf_users SET ping_sent = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             
@@ -269,7 +260,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 7. GIFTING & SOCIAL (1HR COOLDOWN)
+# 7. GIFTING & SOCIAL
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
@@ -456,6 +447,21 @@ if __name__ == "__main__":
     try: b_id = int(TOKEN.split(':')[0])
     except: b_id = None
     init_db(b_id)
+    
+    # --- HOT FIX: DATABASE MIGRATION BLOCK ---
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        # Check if column is still boolean
+        cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'pf_users' AND column_name = 'ping_sent';")
+        if cur.fetchone()[0] == 'boolean':
+            logger.info("🛠 Converting ping_sent column from Boolean to Timestamp...")
+            cur.execute("ALTER TABLE pf_users ALTER COLUMN ping_sent TYPE TIMESTAMP USING NULL;")
+            conn.commit()
+            logger.info("✅ Migration complete.")
+        cur.close(); conn.close()
+    except Exception as e: logger.error(f"Migration Error: {e}")
+    # ----------------------------------------
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_error_handler(error_handler)
     handlers = [
