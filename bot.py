@@ -446,22 +446,36 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 if __name__ == "__main__":
     try: b_id = int(TOKEN.split(':')[0])
     except: b_id = None
+    
+    # 1. Ensure tables exist
     init_db(b_id)
     
-    # --- HOT FIX: DATABASE MIGRATION BLOCK ---
+    # 2. FORCE MIGRATION (The "Surgeon" Fix)
+    # We use lower() to ensure we find the table regardless of case
     try:
         conn = get_db_connection(); cur = conn.cursor()
-        # Check if column is still boolean
-        cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'pf_users' AND column_name = 'ping_sent';")
-        if cur.fetchone()[0] == 'boolean':
-            logger.info("🛠 Converting ping_sent column from Boolean to Timestamp...")
+        cur.execute("""
+            SELECT data_type FROM information_schema.columns 
+            WHERE LOWER(table_name) = 'pf_users' 
+            AND LOWER(column_name) = 'ping_sent';
+        """)
+        row = cur.fetchone()
+        
+        if row and row[0].lower() == 'boolean':
+            logger.info("🛠️ CRITICAL UPDATE: Converting 'ping_sent' to Timestamp...")
             cur.execute("ALTER TABLE pf_users ALTER COLUMN ping_sent TYPE TIMESTAMP USING NULL;")
             conn.commit()
-            logger.info("✅ Migration complete.")
+            logger.info("✅ SUCCESS: Database upgraded. Calories are safe.")
+        elif not row:
+            logger.warning("⚠️ Column 'ping_sent' not found. Ensure init_db ran correctly.")
+        else:
+            logger.info(f"ℹ️ Database check: 'ping_sent' is already {row[0]}. No action needed.")
+            
         cur.close(); conn.close()
-    except Exception as e: logger.error(f"Migration Error: {e}")
-    # ----------------------------------------
+    except Exception as e: 
+        logger.error(f"Migration Error: {e}")
 
+    # 3. Start Bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_error_handler(error_handler)
     handlers = [
