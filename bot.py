@@ -73,6 +73,8 @@ def get_progress_bar(current, total=METER_GOAL):
 # ==========================================
 def init_db(bot_id=None):
     conn = get_db_connection(); cur = conn.cursor()
+    # Note: ping_sent is kept as it was in the DB to avoid type errors.
+    # We add last_pfp_gen as the new dedicated timestamp column.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
@@ -80,9 +82,19 @@ def init_db(bot_id=None):
             daily_clog NUMERIC DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
             last_snack TIMESTAMP, last_hack TIMESTAMP,
             ping_sent TIMESTAMP, last_gift_sent TIMESTAMP,
+            last_pfp_gen TIMESTAMP,
             sabotage_val BIGINT DEFAULT 0, gifts_sent_val BIGINT DEFAULT 0
         );
     """)
+    
+    # SAFE MIGRATION: Add the column to existing tables if it doesn't exist
+    try:
+        cur.execute("ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS last_pfp_gen TIMESTAMP;")
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.info(f"New column check: {e}")
+
     cur.execute("INSERT INTO pf_users (user_id, username, total_calories) VALUES (0, 'KITCHEN_SYSTEM', 0) ON CONFLICT DO NOTHING")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
@@ -133,7 +145,6 @@ async def check_pings(application):
         try:
             conn = get_db_connection(); cur = conn.cursor()
             cur.execute("SELECT user_id FROM pf_users WHERE last_snack <= %s OR last_snack IS NULL", (ago,))
-            users_to_ping = cur.fetchall()
             cur.close(); conn.close()
         except Exception as e:
             if conn: conn.close()
@@ -206,7 +217,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 6. PHAT PFP GENERATOR
+# 6. PHAT PFP GENERATOR (NEW COLUMN: last_pfp_gen)
 # ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
@@ -216,7 +227,8 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     
     try:
-        cur.execute("SELECT ping_sent FROM pf_users WHERE user_id = %s", (user.id,))
+        # Check independent timer in NEW last_pfp_gen column
+        cur.execute("SELECT last_pfp_gen FROM pf_users WHERE user_id = %s", (user.id,))
         res = cur.fetchone()
         if res and res[0] and isinstance(res[0], datetime) and now - res[0] < timedelta(hours=24):
             rem = timedelta(hours=24) - (now - res[0])
@@ -240,7 +252,8 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_img_bytes = await task
 
         if result_img_bytes:
-            cur.execute("UPDATE pf_users SET ping_sent = %s WHERE user_id = %s", (now, user.id))
+            # Update the NEW independent phatme timer
+            cur.execute("UPDATE pf_users SET last_pfp_gen = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             
             await context.bot.send_photo(
@@ -447,26 +460,10 @@ if __name__ == "__main__":
     try: b_id = int(TOKEN.split(':')[0])
     except: b_id = None
     
-    # 1. Initialize tables
+    # 1. Initialize tables (Now safely adds last_pfp_gen column)
     init_db(b_id)
     
-    # 2. FORCE MIGRATION (No checks, just action)
-    # This is the only way to bypass the metadata issues you're seeing.
-    try:
-        conn = get_db_connection(); cur = conn.cursor()
-        logger.info("⚡ FORCE MIGRATING: Converting 'ping_sent' to Timestamp...")
-        
-        # This specific SQL command handles the conversion directly.
-        # If it's already a timestamp, it will just do nothing or throw a minor notice.
-        cur.execute("ALTER TABLE pf_users ALTER COLUMN ping_sent TYPE TIMESTAMP USING NULL;")
-        
-        conn.commit()
-        cur.close(); conn.close()
-        logger.info("✅ SUCCESS: Database structure forced to correct type. Calories safe.")
-    except Exception as e:
-        logger.warning(f"ℹ️ Migration Note: {e} (This usually means it was already fixed)")
-
-    # 3. Start Bot
+    # 2. Start Bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_error_handler(error_handler)
     handlers = [
