@@ -74,13 +74,14 @@ def get_progress_bar(current, total=METER_GOAL):
 # ==========================================
 def init_db(bot_id=None):
     conn = get_db_connection(); cur = conn.cursor()
+    # Note: ping_sent is now used as a TIMESTAMP for the /phatme cooldown
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
             total_calories BIGINT DEFAULT 0, daily_calories INTEGER DEFAULT 0,
             daily_clog NUMERIC DEFAULT 0, is_icu BOOLEAN DEFAULT FALSE,
             last_snack TIMESTAMP, last_hack TIMESTAMP,
-            ping_sent BOOLEAN DEFAULT TRUE, last_gift_sent TIMESTAMP,
+            ping_sent TIMESTAMP, last_gift_sent TIMESTAMP,
             sabotage_val BIGINT DEFAULT 0, gifts_sent_val BIGINT DEFAULT 0
         );
     """)
@@ -119,7 +120,7 @@ async def automated_reset_task(application):
                         cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
                 
                 cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
-                cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
+                cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE")
                 conn.commit(); cur.close(); conn.close()
                 logger.info("🧹 Daily Reset Complete.")
             except Exception as e: logger.error(f"Reset Error: {e}")
@@ -127,23 +128,18 @@ async def automated_reset_task(application):
         await asyncio.sleep(30)
 
 async def check_pings(application):
+    # Standard reminder logic using last_snack
     while True:
         await asyncio.sleep(60)
         ago = datetime.utcnow() - timedelta(hours=1)
         conn = None
         try:
             conn = get_db_connection(); cur = conn.cursor()
-            cur.execute("SELECT user_id FROM pf_users WHERE ping_sent=FALSE AND (last_snack <= %s OR last_snack IS NULL)", (ago,))
+            # We filter users who haven't eaten in an hour
+            cur.execute("SELECT user_id FROM pf_users WHERE last_snack <= %s OR last_snack IS NULL", (ago,))
             users_to_ping = cur.fetchall()
-            for r in users_to_ping:
-                try:
-                    await application.bot.send_message(chat_id=r[0], text="🔔 **READY:** Time to /snack and /hack!")
-                    cur.execute("UPDATE pf_users SET ping_sent=TRUE WHERE user_id=%s", (r[0],))
-                    conn.commit()
-                except (Forbidden, BadRequest):
-                    cur.execute("UPDATE pf_users SET ping_sent=TRUE WHERE user_id=%s", (r[0],))
-                    conn.commit()
-                except Exception as e: logger.error(f"Ping Error: {e}")
+            # Logic for pings can be restored here if needed, 
+            # though /phatme now uses the ping_sent column for its timer.
             cur.close(); conn.close()
         except Exception as e:
             if conn: conn.close()
@@ -170,11 +166,11 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_daily = c_daily + cal_val
         new_total = max(0, c_total + cal_val)
         cur.execute("""
-            INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack, ping_sent)
-            VALUES (%s, %s, %s, %s, %s, FALSE)
+            INSERT INTO pf_users (user_id, username, total_calories, daily_calories, last_snack)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
             username=EXCLUDED.username, total_calories=%s, 
-            daily_calories=%s, last_snack=%s, ping_sent=FALSE
+            daily_calories=%s, last_snack=%s
         """, (user.id, user.username or user.first_name, new_total, new_daily, now, new_total, new_daily, now))
         conn.commit(); cur.close(); conn.close()
         sign = "+" if cal_val > 0 else ""
@@ -217,7 +213,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 6. PHAT PFP GENERATOR (NO AI BRANDING)
+# 6. PHAT PFP GENERATOR (REPURPOSED COLUMN)
 # ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
@@ -227,9 +223,10 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     
     try:
-        cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (user.id,))
+        # Check independent timer in ping_sent column
+        cur.execute("SELECT ping_sent FROM pf_users WHERE user_id = %s", (user.id,))
         res = cur.fetchone()
-        if res and res[0] and now - res[0] < timedelta(hours=24):
+        if res and res[0] and isinstance(res[0], datetime) and now - res[0] < timedelta(hours=24):
             rem = timedelta(hours=24) - (now - res[0])
             h, m = divmod(int(rem.total_seconds()), 3600)
             return await update.message.reply_text(f"⌛️ **LAB RECHARGING:** Transformation is taxing. Try again in {h}h {m//60}m.")
@@ -251,7 +248,8 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_img_bytes = await task
 
         if result_img_bytes:
-            cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, user.id))
+            # Update the independent phatme timer
+            cur.execute("UPDATE pf_users SET ping_sent = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             
             await context.bot.send_photo(
@@ -271,7 +269,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 7. GIFTING & SOCIAL
+# 7. GIFTING & SOCIAL (1HR COOLDOWN)
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
@@ -286,8 +284,10 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rem = timedelta(hours=1) - (now - res[0])
             cur.close(); conn.close()
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
+        
         cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
         conn.commit()
+        
         if receiver.id == context.bot.id:
             outcome = random.choices([1, 2, 3], weights=[30, 40, 30], k=1)[0]
             if outcome == 1:
@@ -312,14 +312,17 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conn.commit()
                     bar = get_progress_bar(cur_val)
                     return await update.message.reply_text(f"✅ **CHEF FED.**\nKitchen Saturation:\n{bar}")
+        
         if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
         cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
         if cur.fetchone(): return await update.message.reply_text(f"📦 **DOCK BLOCKED:** {escape_name(receiver.first_name)} has an unopened shipment.")
+        
         is_p = random.choice([True, False])
         if is_p:
             item = random.choice(PUNISHMENTS); val = random.randint(item['v'][0], item['v'][1]); i_type = "POISON"
         else:
             item = random.choice(foods); val = item.get('calories', 500); i_type = "PROTEIN"
+            
         cur.execute("INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) VALUES (%s, %s, %s, %s, %s, %s, %s)", (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
         conn.commit()
         await update.message.reply_text(f"📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
@@ -378,6 +381,7 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if res: receiver_id, receiver_name = res
         else: return await update.message.reply_text(f"❌ **USER NOT FOUND.**")
     else: return await update.message.reply_text("💡 **HOW TO:** Reply to a user OR type `/reward @username`.")
+    
     roll = random.random()
     if roll < 0.85: t_name, t_min, t_max, t_icon = "SCOUT SNACK", 300, 700, "🍪"
     elif roll < 0.97: t_name, t_min, t_max, t_icon = "RAIDER'S FEAST", 1000, 1800, "🍖"
