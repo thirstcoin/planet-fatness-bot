@@ -20,6 +20,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
+# Global set to prevent asyncio tasks from being garbage collected
+running_ai_tasks = set()
+
 @flask_app.route("/")
 def home(): return "Planet Fatness: All Systems Online 🧪🍔", 200
 
@@ -239,7 +242,12 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(file_id)
         photo_bytes = await file.download_as_bytearray()
 
-        result_img_bytes = phat_processor.generate_phat_image(photo_bytes)
+        # UPDATED: Protected Async Task management for 2026 infrastructure
+        task = asyncio.create_task(asyncio.to_thread(phat_processor.generate_phat_image, photo_bytes))
+        running_ai_tasks.add(task)
+        task.add_done_callback(running_ai_tasks.discard)
+        
+        result_img_bytes = await task
 
         if result_img_bytes:
             # Update cooldown timestamp
@@ -419,7 +427,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT total_calories, daily_calories, CAST(daily_clog AS FLOAT), is_icu FROM pf_users WHERE user_id = %s", (user.id,))
-    u = cur.fetchone()
+    u = u = cur.fetchone()
     cur.execute("SELECT total_calories FROM pf_users WHERE user_id = 0")
     meter_val = cur.fetchone()[0]
     cur.close(); conn.close()
