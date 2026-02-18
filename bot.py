@@ -20,7 +20,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
-# Global set to prevent asyncio tasks from being garbage collected
+# 2026 STABILITY FIX: Global set to prevent asyncio tasks from being garbage collected
+# This prevents the "Task was destroyed but it is pending" error on Render.
 running_ai_tasks = set()
 
 @flask_app.route("/")
@@ -216,7 +217,7 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         cur.close(); conn.close()
 
-# --- NEW PHAT PFP COMMAND (WITH COOLDOWN) ---
+# --- ASYNC HARDENED PFP COMMAND ---
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
         return await update.message.reply_text("❌ AI Engine offline.")
@@ -225,7 +226,6 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
     
     try:
-        # Check for 24-hour cooldown using last_gift_sent column
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (user.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=24):
@@ -236,13 +236,14 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not photos.photos:
             return await update.message.reply_text("❌ No profile picture detected.")
 
-        status_msg = await update.message.reply_text("🧪 Processing $PHAT DNA... Please wait.")
+        status_msg = await update.message.reply_text("🧪 Processing $PHAT DNA... Please wait (45-60s).")
 
         file_id = photos.photos[0][-1].file_id
         file = await context.bot.get_file(file_id)
         photo_bytes = await file.download_as_bytearray()
 
-        # UPDATED: Protected Async Task management for 2026 infrastructure
+        # ASYNC PROTECTION: Run the Gemini synthesis in a separate thread but track as task
+        # This prevents the loop from blocking and prevents task garbage collection
         task = asyncio.create_task(asyncio.to_thread(phat_processor.generate_phat_image, photo_bytes))
         running_ai_tasks.add(task)
         task.add_done_callback(running_ai_tasks.discard)
@@ -250,7 +251,6 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_img_bytes = await task
 
         if result_img_bytes:
-            # Update cooldown timestamp
             cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             
@@ -262,7 +262,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("⚠️ AI synthesis failed. The lab is at capacity.")
+            await status_msg.edit_text("⚠️ AI synthesis failed. The lab is at capacity or blocked by safety filters.")
             
     except Exception as e:
         logger.error(f"PhatMe Error: {e}")
@@ -277,7 +277,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     receiver = update.message.reply_to_message.from_user
     conn = get_db_connection(); cur = conn.cursor()
     try:
-        # Note: Gift and PhatMe share this column to prevent spamming the bot's heavy actions
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=1):
@@ -427,7 +426,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = get_db_connection(); cur = conn.cursor()
     cur.execute("SELECT total_calories, daily_calories, CAST(daily_clog AS FLOAT), is_icu FROM pf_users WHERE user_id = %s", (user.id,))
-    u = u = cur.fetchone()
+    u = cur.fetchone()
     cur.execute("SELECT total_calories FROM pf_users WHERE user_id = 0")
     meter_val = cur.fetchone()[0]
     cur.close(); conn.close()
