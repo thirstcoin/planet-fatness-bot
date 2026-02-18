@@ -20,8 +20,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
-# 2026 STABILITY FIX: Global set to prevent asyncio tasks from being garbage collected
-# This prevents the "Task was destroyed but it is pending" error on Render.
+# 2026 STABILITY FIX: Global set to prevent asyncio tasks from being garbage collected.
+# Without this, long AI generations (45s+) are killed by the Python garbage collector.
 running_ai_tasks = set()
 
 @flask_app.route("/")
@@ -40,7 +40,7 @@ except:
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-METER_GOAL = 20000  # Global Kitchen Threshold
+METER_GOAL = 20000 
 
 # ==========================================
 # 2. DEGEN CONFIG & DATA
@@ -105,7 +105,7 @@ def init_db(bot_id=None):
     conn.commit(); cur.close(); conn.close()
 
 # ==========================================
-# 4. BACKGROUND TASKS (HARDENED)
+# 4. BACKGROUND TASKS
 # ==========================================
 async def automated_reset_task(application):
     while True:
@@ -122,7 +122,7 @@ async def automated_reset_task(application):
                 cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, ping_sent = FALSE")
                 conn.commit(); cur.close(); conn.close()
-                logger.info("🧹 Daily Reset & 7-Day Winner Purge Complete.")
+                logger.info("🧹 Daily Reset Complete.")
             except Exception as e: logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
         await asyncio.sleep(30)
@@ -217,7 +217,9 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         cur.close(); conn.close()
 
-# --- ASYNC HARDENED PFP COMMAND ---
+# ==========================================
+# 6. PHAT PFP GENERATOR (PROTECTED ASYNC)
+# ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
         return await update.message.reply_text("❌ AI Engine offline.")
@@ -230,7 +232,8 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=24):
             rem = timedelta(hours=24) - (now - res[0])
-            return await update.message.reply_text(f"⌛️ **AI COOLING:** Transformation is taxing. Try again in {int(rem.total_seconds()//3600)}h {int((rem.total_seconds()//60)%60)}m.")
+            h, m = divmod(int(rem.total_seconds()), 3600)
+            return await update.message.reply_text(f"⌛️ **AI COOLING:** {h}h {m//60}m remaining.")
 
         photos = await context.bot.get_user_profile_photos(user.id)
         if not photos.photos:
@@ -242,8 +245,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(file_id)
         photo_bytes = await file.download_as_bytearray()
 
-        # ASYNC PROTECTION: Run the Gemini synthesis in a separate thread but track as task
-        # This prevents the loop from blocking and prevents task garbage collection
+        # RUN IN THREAD & ADD TO GLOBAL SET
         task = asyncio.create_task(asyncio.to_thread(phat_processor.generate_phat_image, photo_bytes))
         running_ai_tasks.add(task)
         task.add_done_callback(running_ai_tasks.discard)
@@ -262,7 +264,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("⚠️ AI synthesis failed. The lab is at capacity or blocked by safety filters.")
+            await status_msg.edit_text("⚠️ AI synthesis failed. Lab filters or capacity reached.")
             
     except Exception as e:
         logger.error(f"PhatMe Error: {e}")
@@ -270,6 +272,9 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         cur.close(); conn.close()
 
+# ==========================================
+# 7. GIFTING & SOCIAL
+# ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
     if not update.message.reply_to_message:
@@ -354,6 +359,9 @@ async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit(); cur.close(); conn.close()
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
+# ==========================================
+# 8. ADMIN & STATS
+# ==========================================
 async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
