@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
 # 2026 STABILITY FIX: Global set to prevent asyncio tasks from being garbage collected.
-# Without this, long AI generations (45s+) are killed by the Python garbage collector.
 running_ai_tasks = set()
 
 @flask_app.route("/")
@@ -218,11 +217,11 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close(); conn.close()
 
 # ==========================================
-# 6. PHAT PFP GENERATOR (PROTECTED ASYNC)
+# 6. PHAT PFP GENERATOR (NO AI BRANDING)
 # ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
-        return await update.message.reply_text("❌ AI Engine offline.")
+        return await update.message.reply_text("❌ Laboratory offline.")
     
     user, now = update.effective_user, datetime.utcnow()
     conn = get_db_connection(); cur = conn.cursor()
@@ -233,19 +232,18 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if res and res[0] and now - res[0] < timedelta(hours=24):
             rem = timedelta(hours=24) - (now - res[0])
             h, m = divmod(int(rem.total_seconds()), 3600)
-            return await update.message.reply_text(f"⌛️ **AI COOLING:** {h}h {m//60}m remaining.")
+            return await update.message.reply_text(f"⌛️ **LAB RECHARGING:** Transformation is taxing. Try again in {h}h {m//60}m.")
 
         photos = await context.bot.get_user_profile_photos(user.id)
         if not photos.photos:
             return await update.message.reply_text("❌ No profile picture detected.")
 
-        status_msg = await update.message.reply_text("🧪 Processing $PHAT DNA... Please wait (45-60s).")
+        status_msg = await update.message.reply_text("🧪 Synthesizing $PHAT DNA... Please wait (45-60s).")
 
         file_id = photos.photos[0][-1].file_id
         file = await context.bot.get_file(file_id)
         photo_bytes = await file.download_as_bytearray()
 
-        # RUN IN THREAD & ADD TO GLOBAL SET
         task = asyncio.create_task(asyncio.to_thread(phat_processor.generate_phat_image, photo_bytes))
         running_ai_tasks.add(task)
         task.add_done_callback(running_ai_tasks.discard)
@@ -264,7 +262,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text("⚠️ AI synthesis failed. Lab filters or capacity reached.")
+            await status_msg.edit_text("⚠️ Synthesis failed. DNA was rejected by the Bio-Filter.")
             
     except Exception as e:
         logger.error(f"PhatMe Error: {e}")
@@ -444,7 +442,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def set_bot_commands(application):
-    cmds = [("snack", "Devour feast"), ("hack", "Infiltrate Lab"), ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), ("phatme", "AI PFP Transformation"), ("reward", "Admin Reward"), ("status", "Vitals"), ("daily", "Daily Rank"), ("leaderboard", "Hall of Girth"), ("clogboard", "Cardiac Ward"), ("winners", "Airdrop Legends")]
+    cmds = [("snack", "Devour feast"), ("hack", "Infiltrate Lab"), ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), ("phatme", "PFP Transformation"), ("reward", "Admin Reward"), ("status", "Vitals"), ("daily", "Daily Rank"), ("leaderboard", "Hall of Girth"), ("clogboard", "Cardiac Ward"), ("winners", "Airdrop Legends")]
     await application.bot.set_my_commands(cmds)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
