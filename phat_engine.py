@@ -26,7 +26,7 @@ class PhatEngine:
             self.client = None
             logger.error("❌ GEMINI_API_KEY missing from environment variables.")
             
-        self.template_url = "https://i.postimg.cc/5NqxCS7j/IMG-2610.jpg"
+        self.template_url = "https://i.postimg.cc/y6f9tr2n/IMG-2725.jpg"
 
     def generate_phat_image(self, user_img_bytes):
         """
