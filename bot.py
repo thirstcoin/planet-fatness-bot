@@ -411,7 +411,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT username, total_calories FROM pf_users WHERE user_id != 0 ORDER BY total_calories DESC LIMIT 10")
+    cur.execute("SELECT username, total_calories FROM pf_users WHERE user_id != 0 ORDER BY total_calories DESC LIMIT 15")
     rows = cur.fetchall(); cur.close(); conn.close()
     text = "🏆 **THE HALL OF INFINITE GIRTH** 🏆\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
