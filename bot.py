@@ -20,8 +20,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 flask_app = Flask(__name__)
 
-running_ai_tasks = set()
-
 @flask_app.route("/")
 def home(): return "Planet Fatness: All Systems Online 🧪🥊", 200
 
@@ -41,23 +39,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 METER_GOAL = 20000 
 
 # ==========================================
-# 2. DEGEN CONFIG & DATA
+# 2. DATA LOADING
 # ==========================================
 foods, hacks = [], []
 try:
     with open("foods.json", "r") as f: foods = json.load(f)
     with open("hacks.json", "r") as f: hacks = json.load(f)
-except Exception as e: logger.error(f"❌ JSON Load Failed: {e}")
+except Exception as e: 
+    logger.error(f"❌ JSON Load Failed: {e}")
 
-# Standard Punishments for Gifts (Expanded in Step 5/7)
-PUNISHMENTS = [
-    {"name": "Industrial Laxative", "msg": "Daily total vanished in a flash. 🚽", "v": (-3000, -1800)},
-    {"name": "Sugar-Free Gummy Bears", "msg": "The 'Haribo Horror' strikes. 📉", "v": (-1800, -1000)},
-    {"name": "Diet Water", "msg": "The ultimate insult to mass. 💧", "v": (-500, -200)},
-    {"name": "Personal Trainer's Card", "msg": "Calories burned in pure fear. 🏃‍♂️", "v": (-1200, -800)}
-]
-
-def get_db_connection(): return psycopg2.connect(DATABASE_URL, sslmode="require")
+def get_db_connection(): 
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def escape_name(name):
     if not name: return "Degen"
@@ -78,11 +70,11 @@ def get_icu_rank(visits):
     return "Ghost of Planet Fatness"
 
 # ==========================================
-# 3. DATABASE INITIALIZATION (MIGRATED)
+# 3. DATABASE INITIALIZATION & MIGRATIONS
 # ==========================================
 def init_db(bot_id=None):
-    conn = get_db_connection(); cur = conn.cursor()
-    # Main User Table with New Logic Columns
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY, username TEXT,
@@ -101,7 +93,7 @@ def init_db(bot_id=None):
         );
     """)
     
-    # SAFE MIGRATION: Ensure all new columns exist without breaking data
+    # Ensure all columns exist for new features without losing data
     migrations = [
         ("last_pfp_gen", "TIMESTAMP"),
         ("icu_lifetime", "INTEGER DEFAULT 0"),
@@ -114,7 +106,8 @@ def init_db(bot_id=None):
     for col_name, col_type in migrations:
         try:
             cur.execute(f"ALTER TABLE pf_users ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
-        except: conn.rollback()
+        except: 
+            conn.rollback()
 
     cur.execute("INSERT INTO pf_users (user_id, username, total_calories) VALUES (0, 'KITCHEN_SYSTEM', 0) ON CONFLICT DO NOTHING")
     cur.execute("""
@@ -132,17 +125,20 @@ def init_db(bot_id=None):
     """)
     if bot_id:
         cur.execute("DELETE FROM pf_gifts WHERE receiver_id = %s", (bot_id,))
-    conn.commit(); cur.close(); conn.close()
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # ==========================================
-# 4. BACKGROUND TASKS
+# 4. AUTOMATED TASKS
 # ==========================================
 async def automated_reset_task(application):
     while True:
         now_utc = datetime.utcnow()
         if now_utc.hour == 1 and now_utc.minute == 0:
             try:
-                conn = get_db_connection(); cur = conn.cursor()
+                conn = get_db_connection()
+                cur = conn.cursor()
                 for label, col in [('DAILY PHATTEST', 'daily_calories'), ('TOP HACKER', 'daily_clog')]:
                     cur.execute(f"SELECT username, {col} FROM pf_users WHERE {col} > 0 ORDER BY {col} DESC LIMIT 1")
                     winner = cur.fetchone()
@@ -150,11 +146,13 @@ async def automated_reset_task(application):
                         cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
                 
                 cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
-                # Reset daily stats including SMACK KO COUNTER
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, daily_ko_count = 0")
-                conn.commit(); cur.close(); conn.close()
+                conn.commit()
+                cur.close()
+                conn.close()
                 logger.info("🧹 Daily Reset Complete.")
-            except Exception as e: logger.error(f"Reset Error: {e}")
+            except Exception as e: 
+                logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
         await asyncio.sleep(30)
 
@@ -162,28 +160,31 @@ async def check_pings(application):
     while True:
         await asyncio.sleep(60)
         ago = datetime.utcnow() - timedelta(hours=1)
-        conn = None
         try:
-            conn = get_db_connection(); cur = conn.cursor()
+            conn = get_db_connection()
+            cur = conn.cursor()
             cur.execute("SELECT user_id FROM pf_users WHERE last_snack <= %s OR last_snack IS NULL", (ago,))
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
         except Exception as e:
-            if conn: conn.close()
             logger.error(f"Global Ping Loop Error: {e}")
 
 # ==========================================
-# 5. CORE ACTIONS
+# 5. CORE ACTIONS (SNACK & HACK)
 # ==========================================
 async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user, now = update.effective_user, datetime.utcnow()
     conn = None
     try:
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT total_calories, daily_calories, last_snack FROM pf_users WHERE user_id = %s", (user.id,))
         u = cur.fetchone()
+        
         if u and u[2] and now - u[2] < timedelta(hours=1):
             rem = timedelta(hours=1) - (now - u[2])
-            cur.close(); conn.close()
+            cur.close()
+            conn.close()
             return await update.message.reply_text(f"⌛️ Digesting... {int(rem.total_seconds()//60)}m left.")
         
         item = random.choice(foods)
@@ -200,18 +201,24 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             username=EXCLUDED.username, total_calories=%s, 
             daily_calories=%s, last_snack=%s
         """, (user.id, user.username or user.first_name, new_total, new_daily, now, new_total, new_daily, now))
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+        
         sign = "+" if cal_val > 0 else ""
         caption = f"🍔 **{item['name']}** ({sign}{cal_val:,} Cal)\n🔥 Daily: {new_daily:,}"
-        if gif_url: await update.message.reply_animation(animation=gif_url, caption=caption, parse_mode='Markdown')
-        else: await update.message.reply_text(caption, parse_mode='Markdown')
+        if gif_url: 
+            await update.message.reply_animation(animation=gif_url, caption=caption, parse_mode='Markdown')
+        else: 
+            await update.message.reply_text(caption, parse_mode='Markdown')
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         await update.message.reply_text("❌ Kitchen Busy.")
 
 async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id, now = update.effective_user.id, datetime.utcnow()
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT CAST(daily_clog AS FLOAT), is_icu, last_hack FROM pf_users WHERE user_id = %s", (user_id,))
         u = cur.fetchone()
@@ -231,17 +238,24 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         new_c = clog + gain
         if new_c >= 100:
-            # ICU TRACKING: Lifetime Visits +1
             cur.execute("UPDATE pf_users SET daily_clog=0, is_icu=True, last_hack=%s, icu_lifetime = icu_lifetime + 1 WHERE user_id=%s", (now, user_id))
             await update.message.reply_text(f"💀 **FLATLINE!** Lab failure. ICU for 2 hours.\n📈 Lifetime Visits Logged.")
         else:
             cur.execute("UPDATE pf_users SET daily_clog=%s, is_icu=False, last_hack=%s WHERE user_id=%s", (new_c, now, user_id))
-            await update.message.reply_text(f"🩺 **HACK SUCCESS:** {h.get('name')}\n{bonus_text}📈 Clog: {new_c:.1f}% (+{gain}%)")
+            # Shows the Order Blueprint from JSON
+            await update.message.reply_text(
+                f"🩺 **HACK SUCCESS:** {h.get('name')}\n"
+                f"📋 **Order:** {h.get('blueprint', 'Classified information.')}\n"
+                f"{bonus_text}📈 Clog: {new_c:.1f}% (+{gain}%)",
+                parse_mode='Markdown'
+            )
         conn.commit()
-    finally: cur.close(); conn.close()
+    finally: 
+        cur.close()
+        conn.close()
 
 # ==========================================
-# 6. SMACKDOWN PROTOCOL (NEW FEATURE)
+# 6. SMACKDOWN PROTOCOL
 # ==========================================
 async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attacker, now = update.effective_user, datetime.utcnow()
@@ -251,32 +265,29 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     if target.id == attacker.id: return await update.message.reply_text("🚫 You cannot smack yourself.")
     
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
-        # Check Attacker Calories (Cost 200)
         cur.execute("SELECT daily_calories FROM pf_users WHERE user_id = %s", (attacker.id,))
         a_res = cur.fetchone()
         if not a_res or a_res[0] < 200:
             return await update.message.reply_text("🦴 You are too weak. Smacking costs 200 Cal.")
 
-        # Check Target Status
         cur.execute("SELECT smack_count, last_smack_time, smack_ids, daily_ko_count, last_ko_time FROM pf_users WHERE user_id = %s", (target.id,))
         t_data = cur.fetchone()
         s_count, l_smack, s_ids, ko_count, l_ko = t_data if t_data else (0, None, "", 0, None)
 
-        # 6 Hour / 2 Daily KO Protection
         if l_ko and now - l_ko < timedelta(hours=6):
             rem = timedelta(hours=6) - (now - l_ko)
             return await update.message.reply_text(f"🛡️ Target is in recovery. Immune for {int(rem.total_seconds()//60)}m.")
+        
         if ko_count >= 2:
             return await update.message.reply_text("🛡️ Target has reached the daily limit of knockouts.")
 
-        # Unique Attacker & Window Check
         s_list = s_ids.split(",") if s_ids else []
         if str(attacker.id) in s_list:
             return await update.message.reply_text("🚫 You already smacked this user in this window!")
         
-        # Reset window if > 15 mins
         if l_smack and now - l_smack > timedelta(minutes=15):
             s_count, s_list = 0, []
 
@@ -284,11 +295,9 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s_list.append(str(attacker.id))
         new_s_ids = ",".join(s_list)
         
-        # Deduct cost from Attacker
         cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 200, total_calories = total_calories - 200 WHERE user_id = %s", (attacker.id,))
         
         if s_count >= 5:
-            # THE K.O.
             cur.execute("""
                 UPDATE pf_users SET 
                 daily_calories = daily_calories - 2500, total_calories = GREATEST(0, total_calories - 2500),
@@ -297,7 +306,6 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """, (now, target.id))
             await update.message.reply_text(f"💥 **K.O.!** @{escape_name(target.username or target.first_name)} was jumped! **-2,500 Cal** shed.\n🛡️ Recovery active (6 Hours).")
         else:
-            # Record Smack
             cur.execute("UPDATE pf_users SET smack_count = %s, last_smack_time = %s, smack_ids = %s WHERE user_id = %s", (s_count, now, new_s_ids, target.id))
             bar = "🟥" * s_count + "⬜" * (5 - s_count)
             await update.message.reply_text(f"🥊 **SMACKED!** {bar} ({s_count}/5)\n@{escape_name(attacker.username)} spent 200 Cal. 15m left for unique hits!")
@@ -306,10 +314,12 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Smack Error: {e}")
         await update.message.reply_text("⚠️ Smack system jammed.")
-    finally: cur.close(); conn.close()
+    finally: 
+        cur.close()
+        conn.close()
 
 # ==========================================
-# 7. GIFTING (GOLDEN HOUR & REFUND FIX)
+# 7. GIFTING (JSON SHIPMENT OVERHAUL)
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
@@ -319,20 +329,19 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     receiver = update.message.reply_to_message.from_user
     if receiver.id == sender.id: return await update.message.reply_text("🚫 Self-gifting is prohibited.")
     
-    is_golden_hour = now.hour == 0 # 12AM-1AM UTC
-    conn = get_db_connection(); cur = conn.cursor()
+    is_golden_hour = now.hour == 0 
+    conn = get_db_connection()
+    cur = conn.cursor()
     
     try:
-        # Check Cooldown
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=1):
             rem = timedelta(hours=1) - (now - res[0])
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
 
-        # Chef Logic (Hidden interaction)
+        # Special logic for gifting the Chef
         if receiver.id == context.bot.id:
-            # We charge the timer here as it's a direct action
             cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
             outcome = random.choices([1, 2, 3], weights=[30, 40, 30], k=1)[0]
             if outcome == 1:
@@ -352,39 +361,45 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     conn.commit(); return await update.message.reply_text(f"💥 **KITCHEN OVERLOAD!** 🏆 @{escape_name(sender.username)}: **+{jackpot:,} Cal**")
                 conn.commit(); return await update.message.reply_text(f"✅ **CHEF FED.**\n{get_progress_bar(cur_val)}")
 
-        # REFUND LOGIC: Check Dock Blocked BEFORE updating timer
         cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
         if cur.fetchone():
             return await update.message.reply_text(f"📦 **DOCK BLOCKED:** Shipment pending. Cooldown saved.")
 
-        # No block? Update timer now.
         cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
 
-        # GOLDEN HOUR LOGIC
         gh_tag = ""
         if is_golden_hour:
             gh_tag = "🌟 **GOLDEN HOUR:** 100% Protein Active!\n"
             item = random.choice(foods); val = item.get('calories', 500); i_type = "PROTEIN"
+            msg = "Golden Hour Nutrition!"
         else:
             is_p = random.choice([True, False])
             if is_p:
-                item = random.choice(PUNISHMENTS); val = random.randint(item['v'][0], item['v'][1]); i_type = "POISON"
+                # INTEGRATED HACKS.JSON FOR TOXIC GIFTS
+                item = random.choice(hacks)
+                val = random.randint(-2500, -800) 
+                i_type = "POISON"
+                msg = f"Toxin Level: {item.get('blueprint', 'Experimental Sludge.')}"
             else:
                 item = random.choice(foods); val = item.get('calories', 500); i_type = "PROTEIN"
+                msg = "Incoming Delivery!"
             
-        cur.execute("INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) VALUES (%s, %s, %s, %s, %s, %s, %s)", (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, item.get('msg', 'Incoming Delivery!')))
+        cur.execute("INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text) VALUES (%s, %s, %s, %s, %s, %s, %s)", (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, msg))
         conn.commit()
         await update.message.reply_text(f"{gh_tag}📦 **MYSTERY SHIPMENT DROPPED!**\n@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?")
     except Exception as e:
         logger.error(f"Gift Error: {e}")
         await update.message.reply_text("⚠️ Kitchen glitch.")
-    finally: cur.close(); conn.close()
+    finally: 
+        cur.close()
+        conn.close()
 
 async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = None
     try:
-        conn = get_db_connection(); cur = conn.cursor()
+        conn = get_db_connection()
+        cur = conn.cursor()
         cur.execute("SELECT id, sender_name, item_name, item_type, value, sender_id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE ORDER BY id DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
         if not row: return await update.message.reply_text("📦 Your dock is empty.")
@@ -393,7 +408,9 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = GREATEST(0, total_calories + %s) WHERE user_id = %s", (val, val, user_id))
         col = "gifts_sent_val" if i_type == "PROTEIN" else "sabotage_val"
         cur.execute(f"UPDATE pf_users SET {col} = {col} + %s WHERE user_id = %s", (abs(val), s_id))
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         sign = "+" if val > 0 else ""
         header = "💉 **FUEL INJECTED!**" if i_type == "PROTEIN" else "💀 **TOXIN DETECTED!**"
         await update.message.reply_text(f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {sign}{val:,} Cal")
@@ -403,26 +420,31 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def trash_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("UPDATE pf_gifts SET is_opened = TRUE WHERE receiver_id = %s AND is_opened = FALSE", (user_id,))
     cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 100 WHERE user_id = %s", (user_id,))
-    conn.commit(); cur.close(); conn.close()
+    conn.commit()
+    cur.close()
+    conn.close()
     await update.message.reply_text("🚮 **SCRAPPED:** Paid 100 Cal fee.")
 
 # ==========================================
-# 8. STATS & LEADERBOARDS (EXPANDED TO TOP 20)
+# 8. STATS & LEADERBOARDS (DUAL TRACKING)
 # ==========================================
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT total_calories, daily_calories, CAST(daily_clog AS FLOAT), is_icu, icu_lifetime, daily_ko_count, last_ko_time FROM pf_users WHERE user_id = %s", (user.id,))
     u = cur.fetchone()
     cur.execute("SELECT total_calories FROM pf_users WHERE user_id = 0")
     meter_val = cur.fetchone()[0]
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
+    
     if not u: return await update.message.reply_text("❌ No records.")
     
-    # Check Smack Protection Status
     now = datetime.utcnow()
     p_status = "🟢 VULNERABLE"
     if u[5] >= 2: p_status = "🛡️ MAXED (Daily Limit)"
@@ -441,26 +463,46 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT username, daily_calories FROM pf_users WHERE daily_calories != 0 ORDER BY daily_calories DESC LIMIT 20")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     if not rows: return await update.message.reply_text("🍔 **NO MUNCHERS YET.**")
     text = "🔥 **DAILY FEEDING FRENZY (TOP 20)** 🔥\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT username, total_calories FROM pf_users WHERE user_id != 0 ORDER BY total_calories DESC LIMIT 20")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     text = "🏆 **THE HALL OF INFINITE GIRTH (TOP 20)** 🏆\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:,} Cal" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection(); cur = conn.cursor()
-    cur.execute("SELECT username, icu_lifetime FROM pf_users WHERE icu_lifetime > 0 ORDER BY icu_lifetime DESC LIMIT 15")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT username, CAST(daily_clog AS FLOAT) FROM pf_users WHERE daily_clog > 0 ORDER BY daily_clog DESC LIMIT 20")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     if not rows: return await update.message.reply_text("🧪 **THE LAB IS CLEAN.**")
-    text = "🧪 **CARDIAC IMMORTALS (LIFETIME ICU)** 🧪\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]} Visits" for i, r in enumerate(rows)])
+    text = "🧪 **LIVE LAB RESULTS (CURRENT CLOG %)** 🧪\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]:.1f}%" for i, r in enumerate(rows)])
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def deaths(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT username, icu_lifetime FROM pf_users WHERE icu_lifetime > 0 ORDER BY icu_lifetime DESC LIMIT 20")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    if not rows: return await update.message.reply_text("💀 **NO DEATHS LOGGED.**")
+    text = "💀 **CARDIAC IMMORTALS (LIFETIME DEATHS)** 💀\n━━━━━━━━━━━━━━\n" + "\n".join([f"{i+1}. {escape_name(r[0])}: {r[1]} ICU Trips" for i, r in enumerate(rows)])
     await update.message.reply_text(text, parse_mode='Markdown')
 
 # ==========================================
@@ -469,29 +511,38 @@ async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor: return await update.message.reply_text("❌ Laboratory offline.")
     user, now = update.effective_user, datetime.utcnow()
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
         cur.execute("SELECT last_pfp_gen FROM pf_users WHERE user_id = %s", (user.id,))
         res = cur.fetchone()
         if res and res[0] and now - res[0] < timedelta(hours=24):
             rem = timedelta(hours=24) - (now - res[0])
             return await update.message.reply_text(f"⌛️ **LAB RECHARGING:** Try again in {int(rem.total_seconds()//3600)}h.")
+        
         photos = await context.bot.get_user_profile_photos(user.id)
         if not photos.photos: return await update.message.reply_text("❌ No profile picture.")
+        
         status_msg = await update.message.reply_text("🧪 Synthesizing DNA...")
         file_id = photos.photos[0][-1].file_id
         file = await context.bot.get_file(file_id)
         photo_bytes = await file.download_as_bytearray()
+        
         task = asyncio.create_task(asyncio.to_thread(phat_processor.generate_phat_image, photo_bytes))
         result_img_bytes = await task
+        
         if result_img_bytes:
             cur.execute("UPDATE pf_users SET last_pfp_gen = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             await context.bot.send_photo(chat_id=update.effective_chat.id, photo=result_img_bytes, caption=f"🏆 **TRANSFORMATION COMPLETE** @{escape_name(user.username)}!")
             await status_msg.delete()
-        else: await status_msg.edit_text("⚠️ Synthesis failed.")
-    except Exception as e: await update.message.reply_text("❌ Kitchen Connection Lost.")
-    finally: cur.close(); conn.close()
+        else: 
+            await status_msg.edit_text("⚠️ Synthesis failed.")
+    except Exception as e: 
+        await update.message.reply_text("❌ Kitchen Connection Lost.")
+    finally: 
+        cur.close()
+        conn.close()
 
 # ==========================================
 # 10. ADMIN & SYSTEM
@@ -503,15 +554,21 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = update.message.reply_to_message.from_user.id if update.message.reply_to_message else None
     if not target_id: return await update.message.reply_text("💡 Reply to someone.")
     bonus = random.randint(1000, 3000)
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s", (bonus, bonus, target_id))
-    conn.commit(); cur.close(); conn.close()
+    conn.commit()
+    cur.close()
+    conn.close()
     await update.message.reply_text(f"🎯 **RAID REWARD:** +{bonus:,} Cal.")
 
 async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection(); cur = conn.cursor()
+    conn = get_db_connection()
+    cur = conn.cursor()
     cur.execute("SELECT winner_type, username, CAST(score AS FLOAT), win_date FROM pf_airdrop_winners ORDER BY win_date DESC LIMIT 15")
-    rows = cur.fetchall(); cur.close(); conn.close()
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
     if not rows: return await update.message.reply_text("📜 Hall of Fame is empty.")
     text = "🏆 **THE AIRDROP LEGENDS** 🏆\n━━━━━━━━━━━━━━\n"
     for r in rows:
@@ -521,15 +578,22 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def set_bot_commands(application):
-    cmds = [("snack", "Eat"), ("hack", "Lab"), ("smack", "Raid [Reply]"), ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), ("clogboard", "ICU Deaths")]
+    cmds = [
+        ("snack", "Eat"), ("hack", "Lab"), ("smack", "Raid [Reply]"), 
+        ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), 
+        ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), 
+        ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths")
+    ]
     await application.bot.set_my_commands(cmds)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
 if __name__ == "__main__":
-    try: b_id = int(TOKEN.split(':')[0])
-    except: b_id = None
+    try: 
+        b_id = int(TOKEN.split(':')[0])
+    except: 
+        b_id = None
     init_db(b_id)
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_error_handler(error_handler)
@@ -537,7 +601,7 @@ if __name__ == "__main__":
         ("snack", snack), ("hack", hack), ("smack", smack), ("gift", gift), ("open", open_gift), 
         ("trash", trash_gift), ("reward", reward), ("status", status), 
         ("daily", daily), ("leaderboard", leaderboard), ("clogboard", clogboard), 
-        ("winners", winners), ("phatme", phatme)
+        ("deaths", deaths), ("winners", winners), ("phatme", phatme)
     ]
     for c, f in handlers: app.add_handler(CommandHandler(c, f))
     async def post_init(application):
