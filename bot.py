@@ -197,7 +197,6 @@ async def automated_reset_task(application):
 async def check_pings(application):
     while True:
         await asyncio.sleep(60)
-        # Future ping logic can be added here
         pass
 
 # ==========================================
@@ -308,13 +307,11 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Cost Check
         cur.execute("SELECT daily_calories FROM pf_users WHERE user_id = %s", (attacker.id,))
         a_res = cur.fetchone()
         if not a_res or a_res[0] < 200:
             return await update.message.reply_text("🦴 You are too weak. Smacking costs 200 Cal.")
 
-        # Target Checks
         cur.execute("SELECT smack_count, last_smack_time, smack_ids, daily_ko_count, last_ko_time FROM pf_users WHERE user_id = %s", (target.id,))
         t_data = cur.fetchone()
         s_count, l_smack, s_ids, ko_count, l_ko = t_data if t_data else (0, None, "", 0, None)
@@ -330,7 +327,6 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if str(attacker.id) in s_list:
             return await update.message.reply_text("🚫 You already smacked this user in this window!")
         
-        # Reset 15m window if expired
         if l_smack and now - l_smack > timedelta(minutes=15):
             s_count, s_list = 0, []
 
@@ -338,10 +334,8 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s_list.append(str(attacker.id))
         new_s_ids = ",".join(s_list)
         
-        # Pay Cost
         cur.execute("UPDATE pf_users SET daily_calories = daily_calories - 200, total_calories = total_calories - 200 WHERE user_id = %s", (attacker.id,))
         
-        # Process Hits
         if s_count >= 5:
             cur.execute("""
                 UPDATE pf_users SET 
@@ -358,7 +352,6 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{bar} ({s_count}/5)\n"
                 f"@{escape_name(attacker.username)} spent 200 Cal. 15m left for unique hits!"
             )
-
         conn.commit()
     except Exception as e:
         logger.error(f"Smack Error: {e}")
@@ -368,7 +361,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
 # ==========================================
-# 7. GIFTING (GOLDEN HOUR INTEGRATED)
+# 7. GIFTING 
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
@@ -380,9 +373,7 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if receiver.id == sender.id:
         return await update.message.reply_text("🚫 Self-gifting is prohibited.")
     
-    # Golden Hour: 00:00 - 01:00 UTC (8 PM - 9 PM EST)
     is_golden_hour = now.hour == 0 
-    
     conn = get_db_connection()
     cur = conn.cursor()
     
@@ -393,7 +384,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rem = timedelta(hours=1) - (now - res[0])
             return await update.message.reply_text(f"⏳ **COOLDOWN:** {int(rem.total_seconds()//60)}m remaining.")
 
-        # Chef Reflection Logic
         if receiver.id == context.bot.id:
             cur.execute("UPDATE pf_users SET last_gift_sent = %s WHERE user_id = %s", (now, sender.id))
             outcome = random.choices([1, 2, 3], weights=[30, 40, 30], k=1)[0]
@@ -418,7 +408,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.commit()
                 return await update.message.reply_text(f"✅ **CHEF FED.**\n{get_progress_bar(cur_val)}")
 
-        # Dock Block Check
         cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
         if cur.fetchone():
             return await update.message.reply_text(f"📦 **DOCK BLOCKED:** Shipment pending. Cooldown saved.")
@@ -589,7 +578,7 @@ async def deaths(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phat_processor:
-        return await update.message.reply_text("❌ Laboratory offline.")
+        return await update.message.reply_text("❌ Laboratory offline. (phat_engine.py missing)")
     user, now = update.effective_user, datetime.utcnow()
     conn = get_db_connection()
     cur = conn.cursor()
@@ -620,6 +609,7 @@ async def phatme(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else: 
             await status_msg.edit_text("⚠️ Synthesis failed.")
     except Exception as e: 
+        logger.error(f"PhatMe Error: {e}")
         await update.message.reply_text("❌ Kitchen Connection Lost.")
     finally: 
         cur.close()
@@ -668,7 +658,8 @@ async def set_bot_commands(application):
         ("snack", "Eat"), ("hack", "Lab"), ("smack", "Raid [Reply]"), 
         ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), 
         ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), 
-        ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths")
+        ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths"),
+        ("phatme", "Phat PFP Generator") # Added back to the menu!
     ]
     await application.bot.set_my_commands(cmds)
 
