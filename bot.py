@@ -628,14 +628,27 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await update.message.reply_text("💡 Reply to someone.")
         
-    bonus = random.randint(1000, 3000)
+    # --- WEIGHTED REWARD LOGIC ---
+    roll = random.random()
+    if roll < 0.70:
+        bonus = random.randint(100, 500)     # Small (Common)
+        tier = "📦 STANDARD"
+    elif roll < 0.90:
+        bonus = random.randint(501, 1500)    # Medium (Uncommon)
+        tier = "🎁 PREMIUM"
+    else:
+        bonus = random.randint(1501, 5000)   # Large (Rare Jackpot)
+        tier = "💰 CRITICAL HIT"
+    # -----------------------------
+
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("UPDATE pf_users SET daily_calories = daily_calories + %s, total_calories = total_calories + %s WHERE user_id = %s", (bonus, bonus, target_id))
     conn.commit()
     cur.close()
     conn.close()
-    await update.message.reply_text(f"🎯 **RAID REWARD:** +{bonus:,} Cal.")
+    
+    await update.message.reply_text(f"🎯 **RAID REWARD: {tier}**\n+{bonus:,} Cal to @{escape_name(update.message.reply_to_message.from_user.username or update.message.reply_to_message.from_user.first_name)}")
 
 async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
