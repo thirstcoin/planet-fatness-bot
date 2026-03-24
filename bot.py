@@ -418,7 +418,8 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_golden_hour:
             gh_tag = "🌟 **GOLDEN HOUR:** 100% Protein Active!\n"
             item = random.choice(foods)
-            val = item.get('calories', 500)
+            # FIX: Ensure value is forced to positive during Golden Hour
+            val = abs(item.get('calories', 500)) 
             i_type = "PROTEIN"
             msg = "Golden Hour Nutrition!"
         else:
