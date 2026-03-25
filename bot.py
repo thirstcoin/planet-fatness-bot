@@ -78,6 +78,17 @@ def get_icu_rank(visits):
     if visits < 50: return "Cardiac Immortal"
     return "Ghost of Planet Fatness"
 
+def get_win_title(wins, is_hacker=False):
+    if wins == 0: return None
+    if is_hacker:
+        if wins < 5: return "Script Kiddie"
+        if wins < 15: return "System Breach"
+        return "Mainframe Ghost"
+    else:
+        if wins < 5: return "Local Glutton"
+        if wins < 15: return "Buffet Legend"
+        return "Black Hole"
+
 # ==========================================
 # 3. DATABASE INITIALIZATION & MIGRATIONS
 # ==========================================
@@ -85,7 +96,6 @@ def init_db(bot_id=None):
     conn = get_db_connection()
     cur = conn.cursor()
     
-    # Core User Table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_users (
             user_id BIGINT PRIMARY KEY,
@@ -106,11 +116,12 @@ def init_db(bot_id=None):
             last_smack_time TIMESTAMP,
             smack_ids TEXT DEFAULT '',
             daily_ko_count INTEGER DEFAULT 0,
-            last_ko_time TIMESTAMP
+            last_ko_time TIMESTAMP,
+            lifetime_daily_wins INTEGER DEFAULT 0,
+            lifetime_hack_wins INTEGER DEFAULT 0
         );
     """)
     
-    # Feature Migrations
     migrations = [
         ("last_pfp_gen", "TIMESTAMP"),
         ("icu_lifetime", "INTEGER DEFAULT 0"),
@@ -118,7 +129,9 @@ def init_db(bot_id=None):
         ("last_smack_time", "TIMESTAMP"),
         ("smack_ids", "TEXT DEFAULT ''"),
         ("daily_ko_count", "INTEGER DEFAULT 0"),
-        ("last_ko_time", "TIMESTAMP")
+        ("last_ko_time", "TIMESTAMP"),
+        ("lifetime_daily_wins", "INTEGER DEFAULT 0"),
+        ("lifetime_hack_wins", "INTEGER DEFAULT 0")
     ]
     for col_name, col_type in migrations:
         try:
@@ -126,10 +139,8 @@ def init_db(bot_id=None):
         except Exception: 
             conn.rollback()
 
-    # System Account
     cur.execute("INSERT INTO pf_users (user_id, username, total_calories) VALUES (0, 'KITCHEN_SYSTEM', 0) ON CONFLICT DO NOTHING")
     
-    # Airdrop Logs
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
             id SERIAL PRIMARY KEY,
@@ -140,7 +151,6 @@ def init_db(bot_id=None):
         );
     """)
     
-    # Gift Queue
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pf_gifts (
             id SERIAL PRIMARY KEY,
@@ -168,27 +178,31 @@ def init_db(bot_id=None):
 async def automated_reset_task(application):
     while True:
         now_utc = datetime.utcnow()
-        # Reset at 01:00 UTC (9 PM EST)
         if now_utc.hour == 1 and now_utc.minute == 0:
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 
-                # Log Winners
+                # Identify and Log Winners + Increment Lifetime Wins
                 for label, col in [('DAILY PHATTEST', 'daily_calories'), ('TOP HACKER', 'daily_clog')]:
-                    cur.execute(f"SELECT username, {col} FROM pf_users WHERE {col} > 0 ORDER BY {col} DESC LIMIT 1")
+                    cur.execute(f"SELECT user_id, username, {col} FROM pf_users WHERE {col} > 0 ORDER BY {col} DESC LIMIT 1")
                     winner = cur.fetchone()
                     if winner:
-                        cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, winner[0], winner[1]))
+                        w_id, w_name, w_score = winner
+                        # Log to Hall of Fame table
+                        cur.execute("INSERT INTO pf_airdrop_winners (winner_type, username, score) VALUES (%s, %s, %s)", (label, w_name, w_score))
+                        
+                        # Increment Lifetime win counter
+                        win_col = "lifetime_daily_wins" if label == 'DAILY PHATTEST' else "lifetime_hack_wins"
+                        cur.execute(f"UPDATE pf_users SET {win_col} = {win_col} + 1 WHERE user_id = %s", (w_id,))
                 
-                # Cleanup and Reset
                 cur.execute("DELETE FROM pf_airdrop_winners WHERE win_date < NOW() - INTERVAL '7 days'")
                 cur.execute("UPDATE pf_users SET daily_calories = 0, daily_clog = 0, is_icu = FALSE, daily_ko_count = 0")
                 
                 conn.commit()
                 cur.close()
                 conn.close()
-                logger.info("🧹 Daily Reset Complete.")
+                logger.info("🧹 Daily Reset & Win Tracking Complete.")
             except Exception as e: 
                 logger.error(f"Reset Error: {e}")
             await asyncio.sleep(61)
@@ -298,11 +312,9 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attacker, now = update.effective_user, datetime.utcnow()
     target = None
 
-    # --- NEW: LOGIC TO ALLOW SMACKING VIA TAGGING ---
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     elif context.args:
-        # Check if first argument is a mention
         target_username = context.args[0].strip('@')
         conn = get_db_connection()
         cur = conn.cursor()
@@ -312,18 +324,12 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if res:
-            # Create a mock user object to maintain compatibility with existing logic
-            target = type('User', (object,), {
-                'id': res[0], 
-                'username': target_username, 
-                'first_name': target_username
-            })
+            target = type('User', (object,), {'id': res[0], 'username': target_username, 'first_name': target_username})
         else:
             return await update.message.reply_text(f"❌ Target @{target_username} not found in the lab database.")
     
     if not target:
         return await update.message.reply_text("🥊 **HOW TO SMACK:**\n1. Reply to a message with `/smack`\n2. Type `/smack @username`")
-    # ------------------------------------------------
 
     if target.id == attacker.id:
         return await update.message.reply_text("🚫 You cannot smack yourself.")
@@ -340,10 +346,8 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t_data = cur.fetchone()
         s_count, l_smack, s_ids, ko_count, l_ko = t_data if t_data else (0, None, "", 0, None)
 
-        # --- FIX: CLEAR EXPIRED WINDOW FIRST ---
         if l_smack and now - l_smack > timedelta(minutes=15):
             s_count, s_ids = 0, ""
-        # ----------------------------------------
 
         if l_ko and now - l_ko < timedelta(hours=6):
             rem = timedelta(hours=6) - (now - l_ko)
@@ -525,7 +529,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT total_calories, daily_calories, CAST(daily_clog AS FLOAT), is_icu, icu_lifetime, daily_ko_count, last_ko_time FROM pf_users WHERE user_id = %s", (user.id,))
+    cur.execute("""
+        SELECT total_calories, daily_calories, CAST(daily_clog AS FLOAT), is_icu, icu_lifetime, 
+        daily_ko_count, last_ko_time, lifetime_daily_wins, lifetime_hack_wins 
+        FROM pf_users WHERE user_id = %s
+    """, (user.id,))
     u = cur.fetchone()
     cur.execute("SELECT total_calories FROM pf_users WHERE user_id = 0")
     meter_val = cur.fetchone()[0]
@@ -542,6 +550,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif u[6] and now - u[6] < timedelta(hours=6):
         rem = (timedelta(hours=6) - (now - u[6]))
         p_status = f"🛡️ RECOVERING ({int(rem.total_seconds()//60)}m)"
+    
+    # Titles based on lifetime wins
+    phat_title = get_win_title(u[7], False)
+    hack_title = get_win_title(u[8], True)
+    titles = []
+    if phat_title: titles.append(f"🏆 {phat_title} ({u[7]} Wins)")
+    if hack_title: titles.append(f"🧪 {hack_title} ({u[8]} Wins)")
+    title_display = "\n".join(titles) if titles else "🎖️ *No Trophies Yet*"
         
     msg = (f"📋 *VITALS: @{escape_name(user.first_name)}*\n━━━━━━━━━━━━━━\n"
            f"🧬 Status: {'🚨 ICU' if u[3] else '🟢 STABLE'}\n"
@@ -549,9 +565,35 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
            f"🔥 Daily: {u[1]:,} Cal\n"
            f"📈 Total: {u[0]:,} Cal\n"
            f"🩸 Clog: {u[2]:.1f}%\n"
-           f"🥊 Smack Status: {p_status}\n━━━━━━━━━━━━━━\n"
+           f"🥊 Smack Status: {p_status}\n\n"
+           f"🏆 **CHAMPIONSHIPS:**\n{title_display}\n━━━━━━━━━━━━━━\n"
            f"👨‍🍳 **KITCHEN SATIETY:**\n{get_progress_bar(meter_val)}")
     await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def halloffame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Top 10 Daily Wins
+    cur.execute("SELECT username, lifetime_daily_wins FROM pf_users WHERE lifetime_daily_wins > 0 ORDER BY lifetime_daily_wins DESC LIMIT 10")
+    phat_winners = cur.fetchall()
+    # Top 10 Hack Wins
+    cur.execute("SELECT username, lifetime_hack_wins FROM pf_users WHERE lifetime_hack_wins > 0 ORDER BY lifetime_hack_wins DESC LIMIT 10")
+    hack_winners = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    text = "🏆 **THE HALL OF ETERNAL GIRTH** 🏆\n━━━━━━━━━━━━━━\n"
+    text += "🍔 **HEAVYWEIGHT CHAMPS**\n"
+    if not phat_winners: text += "No champions yet.\n"
+    for i, r in enumerate(phat_winners):
+        text += f"{i+1}. {escape_name(r[0])}: {r[1]} Wins\n"
+    
+    text += "\n🧪 **MASTER ARCHITECTS**\n"
+    if not hack_winners: text += "No champions yet.\n"
+    for i, r in enumerate(hack_winners):
+        text += f"{i+1}. {escape_name(r[0])}: {r[1]} Wins\n"
+    text += "━━━━━━━━━━━━━━"
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
@@ -696,7 +738,7 @@ async def set_bot_commands(application):
         ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), 
         ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), 
         ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths"),
-        ("phatme", "Phat PFP Generator") 
+        ("phatme", "Phat PFP Generator"), ("halloffame", "Eternal Champions")
     ]
     await application.bot.set_my_commands(cmds)
 
@@ -717,7 +759,7 @@ if __name__ == "__main__":
         ("snack", snack), ("hack", hack), ("smack", smack), ("gift", gift), ("open", open_gift), 
         ("trash", trash_gift), ("reward", reward), ("status", status), 
         ("daily", daily), ("leaderboard", leaderboard), ("clogboard", clogboard), 
-        ("deaths", deaths), ("winners", winners), ("phatme", phatme)
+        ("deaths", deaths), ("winners", winners), ("phatme", phatme), ("halloffame", halloffame)
     ]
     for c, f in handlers:
         app.add_handler(CommandHandler(c, f))
