@@ -296,11 +296,35 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attacker, now = update.effective_user, datetime.utcnow()
+    target = None
+
+    # --- NEW: LOGIC TO ALLOW SMACKING VIA TAGGING ---
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+    elif context.args:
+        # Check if first argument is a mention
+        target_username = context.args[0].strip('@')
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, username FROM pf_users WHERE username = %s OR username = %s", (target_username, f"@{target_username}"))
+        res = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if res:
+            # Create a mock user object to maintain compatibility with existing logic
+            target = type('User', (object,), {
+                'id': res[0], 
+                'username': target_username, 
+                'first_name': target_username
+            })
+        else:
+            return await update.message.reply_text(f"❌ Target @{target_username} not found in the lab database.")
     
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("🥊 Reply to someone's message to /smack them!")
-    
-    target = update.message.reply_to_message.from_user
+    if not target:
+        return await update.message.reply_text("🥊 **HOW TO SMACK:**\n1. Reply to a message with `/smack`\n2. Type `/smack @username`")
+    # ------------------------------------------------
+
     if target.id == attacker.id:
         return await update.message.reply_text("🚫 You cannot smack yourself.")
     
@@ -668,7 +692,7 @@ async def winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_bot_commands(application):
     cmds = [
-        ("snack", "Eat"), ("hack", "Lab"), ("smack", "Raid [Reply]"), 
+        ("snack", "Eat"), ("hack", "Lab"), ("smack", "Raid [Reply/Tag]"), 
         ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), 
         ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), 
         ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths"),
