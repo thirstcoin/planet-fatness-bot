@@ -316,6 +316,11 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t_data = cur.fetchone()
         s_count, l_smack, s_ids, ko_count, l_ko = t_data if t_data else (0, None, "", 0, None)
 
+        # --- FIX: CLEAR EXPIRED WINDOW FIRST ---
+        if l_smack and now - l_smack > timedelta(minutes=15):
+            s_count, s_ids = 0, ""
+        # ----------------------------------------
+
         if l_ko and now - l_ko < timedelta(hours=6):
             rem = timedelta(hours=6) - (now - l_ko)
             return await update.message.reply_text(f"🛡️ Target is in recovery. Immune for {int(rem.total_seconds()//60)}m.")
@@ -326,9 +331,6 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s_list = s_ids.split(",") if s_ids else []
         if str(attacker.id) in s_list:
             return await update.message.reply_text("🚫 You already smacked this user in this window!")
-        
-        if l_smack and now - l_smack > timedelta(minutes=15):
-            s_count, s_list = 0, []
 
         s_count += 1
         s_list.append(str(attacker.id))
@@ -418,7 +420,6 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_golden_hour:
             gh_tag = "🌟 **GOLDEN HOUR:** 100% Protein Active!\n"
             item = random.choice(foods)
-            # FIX: Ensure value is forced to positive during Golden Hour
             val = abs(item.get('calories', 500)) 
             i_type = "PROTEIN"
             msg = "Golden Hour Nutrition!"
@@ -629,18 +630,16 @@ async def reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_id:
         return await update.message.reply_text("💡 Reply to someone.")
         
-    # --- WEIGHTED REWARD LOGIC ---
     roll = random.random()
     if roll < 0.70:
-        bonus = random.randint(100, 500)     # Small (Common)
+        bonus = random.randint(100, 500)
         tier = "📦 STANDARD"
     elif roll < 0.90:
-        bonus = random.randint(501, 1500)    # Medium (Uncommon)
+        bonus = random.randint(501, 1500)
         tier = "🎁 PREMIUM"
     else:
-        bonus = random.randint(1501, 5000)   # Large (Rare Jackpot)
+        bonus = random.randint(1501, 5000)
         tier = "💰 CRITICAL HIT"
-    # -----------------------------
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -673,7 +672,7 @@ async def set_bot_commands(application):
         ("gift", "Shipment [Reply]"), ("open", "Unbox"), ("trash", "Dump"), 
         ("status", "Vitals"), ("daily", "Rank"), ("leaderboard", "Girth"), 
         ("clogboard", "Live Clog %"), ("deaths", "ICU Deaths"),
-        ("phatme", "Phat PFP Generator") # Added back to the menu!
+        ("phatme", "Phat PFP Generator") 
     ]
     await application.bot.set_my_commands(cmds)
 
