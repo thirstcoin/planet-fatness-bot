@@ -744,7 +744,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bullish_moon:
             caption = (
                 f"🚀 **BULLISH MOON!** Buy another one, ya rich mothafucka!\n"
-                f"💰 **+10,000 Cal**\n"
+                f"🎰 **+10,000 Cal**\n"
                 f"🔥 Daily: {new_daily:,}"
             )
             await update.message.reply_text(caption, parse_mode='Markdown')
