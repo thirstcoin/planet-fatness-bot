@@ -44,6 +44,9 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 METER_GOAL = 20000
 
+# passive hunt cooldown memory
+LAST_CHEF_HUNT_AT = None
+
 # ==========================================
 # 2. DATA LOADING & HELPERS
 # ==========================================
@@ -129,7 +132,7 @@ CHARLIE_QUOTES = [
     "You’re on thin ice with the kitchen.",
     "That wasn’t very phat of you.",
 
-    # Rare / Positive Hits (keep these feeling special)
+    # Rare / Positive Hits
     "Phil approves… this time.",
     "That was actually solid.",
     "You might be learning.",
@@ -224,6 +227,22 @@ def roll_bullish_moon():
 def rampage_active_until(rampage_until, now=None):
     now = now or datetime.utcnow()
     return bool(rampage_until and rampage_until > now)
+
+def is_kitchen_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_id = context.bot.id
+    bot_username = (context.bot.username or "").lower()
+
+    if update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_id:
+        return True
+
+    if context.args:
+        raw = context.args[0].strip().lower().lstrip("@")
+        if raw in {"kitchen", "chef"}:
+            return True
+        if bot_username and raw == bot_username:
+            return True
+
+    return False
 
 # ==========================================
 # 3. DATABASE INITIALIZATION & MIGRATIONS
@@ -375,6 +394,90 @@ async def check_pings(application):
     while True:
         await asyncio.sleep(60)
         pass
+
+async def chef_rampage_task(application):
+    global LAST_CHEF_HUNT_AT
+    while True:
+        await asyncio.sleep(30)
+
+        conn = None
+        cur = None
+        try:
+            now = datetime.utcnow()
+
+            if LAST_CHEF_HUNT_AT and (now - LAST_CHEF_HUNT_AT) < timedelta(seconds=60):
+                continue
+
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT daily_calories, rampage_until
+                FROM pf_users
+                WHERE user_id = 0
+            """)
+            kitchen = cur.fetchone()
+            if not kitchen:
+                continue
+
+            chef_rage = kitchen[0] or 0
+            rampage_until = kitchen[1]
+
+            if not rampage_active_until(rampage_until, now):
+                continue
+
+            cur.execute("""
+                SELECT user_id, username, heat_level
+                FROM pf_users
+                WHERE user_id != 0 AND heat_level >= 45
+                ORDER BY heat_level DESC, total_calories DESC
+                LIMIT 1
+            """)
+            hunted = cur.fetchone()
+
+            if not hunted:
+                continue
+
+            hunted_id, hunted_name, hunted_heat = hunted
+            hunt_damage = 1500
+            new_heat = max(0, (hunted_heat or 0) - 30)
+
+            cur.execute("""
+                UPDATE pf_users
+                SET daily_calories = GREATEST(0, daily_calories - %s),
+                    total_calories = GREATEST(0, total_calories - %s),
+                    heat_level = %s
+                WHERE user_id = %s
+            """, (hunt_damage, hunt_damage, new_heat, hunted_id))
+
+            conn.commit()
+            LAST_CHEF_HUNT_AT = now
+
+            try:
+                mins_left = max(1, int((rampage_until - now).total_seconds() // 60))
+                await application.bot.send_message(
+                    chat_id=hunted_id,
+                    text=(
+                        f"👨‍🍳 **CHEF HUNT!** The kitchen found you during rampage.\n"
+                        f"💥 **-1,500 Cal**\n"
+                        f"🌡️ Heat burned down to **{new_heat}**\n"
+                        f"🔥 Rampage still live: **{mins_left}m**\n"
+                        f"🎤 *{random_charlie_quote()}*"
+                    ),
+                    parse_mode='Markdown'
+                )
+            except (Forbidden, BadRequest):
+                pass
+            except Exception as dm_err:
+                logger.warning(f"Chef hunt DM failed: {dm_err}")
+
+            logger.info(f"👨‍🍳 Passive Chef Hunt hit user_id={hunted_id} heat={hunted_heat} -> {new_heat}")
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logger.error(f"Chef Rampage Task Error: {e}")
+        finally:
+            safe_close(cur, conn)
 
 # ==========================================
 # 5. CORE ACTIONS (SNACK & HACK)
@@ -577,8 +680,16 @@ async def hack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attacker, now = update.effective_user, datetime.utcnow()
     target = None
+    kitchen_target = False
 
-    if update.message.reply_to_message:
+    if is_kitchen_target(update, context):
+        kitchen_target = True
+        target = type('KitchenTarget', (object,), {
+            'id': 0,
+            'username': 'KITCHEN_SYSTEM',
+            'first_name': 'Chef'
+        })
+    elif update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     elif context.args:
         target_username = context.args[0].strip('@')
@@ -612,7 +723,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not target:
         return await update.message.reply_text(
-            "🥊 **HOW TO SMACK:**\n1. Reply to a message with `/smack`\n2. Type `/smack @username`\n"
+            "🥊 **HOW TO SMACK:**\n1. Reply to a message with `/smack`\n2. Type `/smack @username`\n3. Type `/smack kitchen`\n"
             f"🎤 *{random_charlie_quote()}*",
             parse_mode='Markdown'
         )
@@ -639,6 +750,58 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🦴 You are too weak. Smacking costs 200 Cal.\n🎤 *{random_charlie_quote()}*",
                 parse_mode='Markdown'
             )
+
+        cur.execute("""
+            UPDATE pf_users
+            SET daily_calories = daily_calories + 5
+            WHERE user_id = 0
+            RETURNING daily_calories, rampage_until
+        """)
+        chef_state = cur.fetchone()
+        chef_rage = chef_state[0] if chef_state and chef_state[0] else 0
+        current_rampage_until = chef_state[1] if chef_state else None
+
+        if kitchen_target:
+            cur.execute("""
+                UPDATE pf_users
+                SET daily_calories = GREATEST(0, daily_calories - 2000),
+                    total_calories = GREATEST(0, total_calories - 2000),
+                    heat_level = heat_level + 15
+                WHERE user_id = %s
+            """, (attacker.id,))
+
+            cur.execute("""
+                UPDATE pf_users
+                SET daily_calories = daily_calories + 15
+                WHERE user_id = 0
+                RETURNING daily_calories, rampage_until
+            """)
+            chef_state = cur.fetchone()
+            chef_rage = chef_state[0] if chef_state and chef_state[0] else 0
+            current_rampage_until = chef_state[1] if chef_state else None
+
+            if chef_rage >= 100 and not rampage_active_until(current_rampage_until, now):
+                new_rampage_until = now + timedelta(minutes=15)
+                cur.execute("""
+                    UPDATE pf_users
+                    SET rampage_until = %s
+                    WHERE user_id = 0
+                """, (new_rampage_until,))
+                current_rampage_until = new_rampage_until
+
+            conn.commit()
+
+            msg = (
+                f"👨‍🍳 **CHEF SMACK-BACK!** You slapped the kitchen and got folded.\n"
+                f"💥 **-2,000 Cal**\n"
+                f"🌡️ **Heat +15**\n"
+                f"🔥 **CHEF RAGE:** {chef_rage}/100\n"
+            )
+            if rampage_active_until(current_rampage_until, now):
+                mins_left = max(1, int((current_rampage_until - now).total_seconds() // 60))
+                msg += f"🔥 **CHEF RAMPAGE LIVE:** {mins_left}m left.\n"
+            msg += f"🎤 *{random_charlie_quote()}*"
+            return await update.message.reply_text(msg, parse_mode='Markdown')
 
         cur.execute("""
             SELECT smack_count, last_smack_time, smack_ids, daily_ko_count, last_ko_time
@@ -671,16 +834,6 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🚫 You already smacked this user in this window!\n🎤 *{random_charlie_quote()}*",
                 parse_mode='Markdown'
             )
-
-        cur.execute("""
-            UPDATE pf_users
-            SET daily_calories = daily_calories + 5
-            WHERE user_id = 0
-            RETURNING daily_calories, rampage_until
-        """)
-        chef_state = cur.fetchone()
-        chef_rage = chef_state[0] if chef_state and chef_state[0] else 0
-        current_rampage_until = chef_state[1] if chef_state else None
 
         if chef_rage >= 100 and not rampage_active_until(current_rampage_until, now):
             new_rampage_until = now + timedelta(minutes=15)
@@ -868,7 +1021,7 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 i_type = "PROTEIN"
                 msg = "Incoming Delivery!"
 
-            cur.execute("""
+        cur.execute("""
             INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, msg))
@@ -876,7 +1029,9 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await update.message.reply_text(
             f"{gh_tag}📦 MYSTERY SHIPMENT DROPPED!\n"
-            f"@{receiver.username or receiver.first_name}, will you /open or /trash it?"
+            f"@{receiver.username or receiver.first_name}, choose your fate:\n"
+            f"/open\n"
+            f"/trash"
         )
 
     except Exception as e:
@@ -1374,6 +1529,7 @@ if __name__ == "__main__":
         await set_bot_commands(application)
         application.create_task(automated_reset_task(application))
         application.create_task(check_pings(application))
+        application.create_task(chef_rampage_task(application))
         logger.info("🚀 Planet Fatness Online.")
 
     app.post_init = post_init
