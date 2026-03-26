@@ -874,11 +874,10 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, msg))
 
         conn.commit()
-        await update.message.reply_text(
-            f"{gh_tag}📦 **MYSTERY SHIPMENT DROPPED!**\n"
-            f"@{escape_name(receiver.username or receiver.first_name)}, will you `/open` or `/trash` it?",
-            parse_mode='Markdown'
-        )
+     await update.message.reply_text(
+    f"{gh_tag}📦 MYSTERY SHIPMENT DROPPED!\n"
+    f"@{receiver.username or receiver.first_name}, will you /open or /trash it?"
+)
 
     except Exception as e:
         if conn:
