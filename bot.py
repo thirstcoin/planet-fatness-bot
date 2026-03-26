@@ -868,12 +868,12 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 i_type = "PROTEIN"
                 msg = "Incoming Delivery!"
 
-        cur.execute("""
+            cur.execute("""
             INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, msg))
 
-                conn.commit()
+        conn.commit()
         await update.message.reply_text(
             f"{gh_tag}📦 MYSTERY SHIPMENT DROPPED!\n"
             f"@{receiver.username or receiver.first_name}, will you /open or /trash it?"
