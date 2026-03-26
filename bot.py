@@ -327,14 +327,13 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c_daily = u[1] or 0
         last_snack = u[2]
         heat_level = u[3] or 0
-        founder = is_founder(user)
         rampage_live = rampage_active_until(kitchen_rampage_until, now)
 
-        if not founder and last_snack and now - last_snack < timedelta(hours=1):
+        if last_snack and now - last_snack < timedelta(hours=1):
             rem = timedelta(hours=1) - (now - last_snack)
             return await update.message.reply_text(f"⌛️ Digesting... {int(rem.total_seconds()//60)}m left.")
 
-        if rampage_live and not founder:
+        if rampage_live:
             if random.random() < 0.50:
                 cur.execute("""
                     UPDATE pf_users
@@ -359,7 +358,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='Markdown'
                 )
 
-        if not founder and heat_level > 60 and random.random() < 0.50:
+        if heat_level > 60 and random.random() < 0.50:
             cur.execute("UPDATE pf_users SET last_snack = %s WHERE user_id = %s", (now, user.id))
             conn.commit()
             return await update.message.reply_text(
@@ -410,7 +409,7 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption, parse_mode='Markdown')
         else:
             sign = "+" if cal_val > 0 else ""
-            if rampage_live and not founder:
+            if rampage_live:
                 caption = (
                     f"🍔 **RAMPAGE SURVIVED!** You escaped the 2k punishment.\n"
                     f"**{item['name']}** ({sign}{cal_val:,} Cal)\n"
@@ -614,7 +613,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """, (new_rampage_until,))
             current_rampage_until = new_rampage_until
 
-        if chef_rage > 50 and not is_founder(attacker) and random.random() < 0.30:
+        if chef_rage > 50 and random.random() < 0.30:
             cur.execute("""
                 UPDATE pf_users
                 SET daily_calories = GREATEST(0, daily_calories - 1500),
