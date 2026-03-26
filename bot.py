@@ -57,11 +57,89 @@ except Exception as e:
     logger.error(f"❌ JSON Load Failed: {e}")
 
 CHARLIE_QUOTES = [
-    "What did the five fingers say to the face? SLAP!",
-    "You're a habitual line stepper!",
-    "I'm Rick James, btch!",
-    "Darkness is spreading!",
-    "I never just did things just to do them... but I'll kick yo couch!"
+    # Phil Roast Mode
+    "Phil says you built like a before picture.",
+    "You got more Ls than a diet plan.",
+    "That decision was calorie-deficient.",
+    "You thought that was a good idea? Be honest.",
+    "Phil wouldn't even spot you on that move.",
+    "You just embarrassed your bloodline.",
+    "That play had zero protein in it.",
+    "You moving like low-cal behavior.",
+    "Even the treadmill wouldn’t claim you.",
+    "You built like you skip snack time.",
+
+    # Kitchen / Chef Authority
+    "The kitchen saw that and said no.",
+    "Chef just revoked your plate.",
+    "That wasn’t on the menu.",
+    "You reached... and got cooked.",
+    "The kitchen don’t forget.",
+    "Chef don’t reward stupidity.",
+    "You just lost meal privileges.",
+    "Plate denied.",
+    "That tray was not yours.",
+    "The kitchen is disappointed.",
+
+    # Greed / Punishment Energy
+    "You got greedy. Again.",
+    "One more wasn’t the move.",
+    "You should’ve stopped.",
+    "That last click cost you.",
+    "Greed got you cooked.",
+    "You played yourself for calories.",
+    "You almost had it… then ruined it.",
+    "That was the line. You crossed it.",
+    "You fumbled the bag and the snack.",
+    "Perfect run… until you showed up.",
+
+    # Food Puns / Calorie Humor
+    "That was a heavy L.",
+    "You just dropped calories on impact.",
+    "Zero gains detected.",
+    "That move burned nothing but dignity.",
+    "You’re not bulking, you’re collapsing.",
+    "That was not gym behavior.",
+    "Snack denied. Try again later.",
+    "You lost more than calories just now.",
+    "That decision was deep fried garbage.",
+    "You got cooked without seasoning.",
+
+    # Smack / Aggro Energy
+    "Hands rated E for everyone.",
+    "That slap came with seasoning.",
+    "Full force. No hesitation.",
+    "That one echoed through the kitchen.",
+    "You felt that in your macros.",
+    "That wasn’t a warning shot.",
+    "Clean hit. Ugly outcome.",
+    "You got checked immediately.",
+    "That was disrespectful levels of force.",
+    "Somebody had to do it.",
+
+    # Gym / Planet Fatness Tone
+    "This gym don’t forgive.",
+    "Tapping counts as cardio… not whatever that was.",
+    "You just lost your membership.",
+    "Phil is shaking his head.",
+    "That’s not how we bulk here.",
+    "You failed the vibe check.",
+    "That was weak energy.",
+    "You not built for this gym.",
+    "You’re on thin ice with the kitchen.",
+    "That wasn’t very phat of you.",
+
+    # Rare / Positive Hits (keep these feeling special)
+    "Phil approves… this time.",
+    "That was actually solid.",
+    "You might be learning.",
+    "Clean execution. Respect.",
+    "You got away with one.",
+    "That was dangerously competent.",
+    "The kitchen allowed it.",
+    "You earned that plate.",
+    "Certified bulk behavior.",
+    "That one counts."
 ]
 
 def get_db_connection():
