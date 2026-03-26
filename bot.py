@@ -43,6 +43,11 @@ except ImportError:
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 METER_GOAL = 20000
+MAIN_CHAT_ID = int(os.getenv("MAIN_CHAT_ID", "0"))
+RAMPAGE_SNACK_PENALTY = 2500
+RAMPAGE_HUNT_DAMAGE = 1500
+RAMPAGE_HUNT_COOLDOWN_MINUTES = 5
+RAMPAGE_REMINDER_MINUTES = 15
 
 # passive hunt cooldown memory
 LAST_CHEF_HUNT_AT = None
@@ -241,6 +246,139 @@ def is_kitchen_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return False
 
+def get_rage_tier(rage):
+    if rage >= 100:
+        return 100
+    if rage >= 75:
+        return 75
+    if rage >= 50:
+        return 50
+    if rage >= 25:
+        return 25
+    return 0
+
+async def send_main_chat_message(bot, text):
+    if not MAIN_CHAT_ID:
+        return
+    try:
+        await bot.send_message(
+            chat_id=MAIN_CHAT_ID,
+            text=text,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.warning(f"Main chat send failed: {e}")
+
+async def maybe_announce_rage(bot, cur, conn, rage):
+    tier = get_rage_tier(rage)
+
+    cur.execute("""
+        SELECT last_rage_announce_level
+        FROM pf_users
+        WHERE user_id = 0
+    """)
+    row = cur.fetchone()
+    last_tier = row[0] if row and row[0] is not None else 0
+
+    if tier <= last_tier or tier == 0:
+        return
+
+    if tier == 25:
+        msg = (
+            f"👨‍🍳 **CHEF IS HEATING UP...**\n"
+            f"🔥 **Chef Rage:** {rage}/100\n"
+            f"The kitchen is starting to notice the disrespect."
+        )
+    elif tier == 50:
+        msg = (
+            f"👨‍🍳 **CHEF WARNING**\n"
+            f"🔥 **Chef Rage:** {rage}/100\n"
+            f"The kitchen is pissed. Rampage is getting closer."
+        )
+    elif tier == 75:
+        msg = (
+            f"🚨 **CHEF IS NEAR BOILING**\n"
+            f"🔥 **Chef Rage:** {rage}/100\n"
+            f"One more wave of disrespect and the kitchen could snap."
+        )
+    else:
+        msg = (
+            f"💥 **CHEF RAMPAGE ACTIVATED** 💥\n"
+            f"🔥 **Chef Rage:** {rage}/100\n"
+            f"⏳ **Duration:** 1 hour\n"
+            f"⚠️ Snacks are now dangerous (**50/50** for **-{RAMPAGE_SNACK_PENALTY:,} Cal**)\n"
+            f"⚠️ Anyone with heat is now in play.\n"
+            f"The kitchen has lost control."
+        )
+
+    await send_main_chat_message(bot, msg)
+
+    cur.execute("""
+        UPDATE pf_users
+        SET last_rage_announce_level = %s
+        WHERE user_id = 0
+    """, (tier,))
+    conn.commit()
+
+async def maybe_send_rampage_reminder(bot, cur, conn, rampage_until, now):
+    if not rampage_active_until(rampage_until, now):
+        return
+
+    cur.execute("""
+        SELECT last_rampage_reminder_at
+        FROM pf_users
+        WHERE user_id = 0
+    """)
+    row = cur.fetchone()
+    last_reminder = row[0] if row else None
+
+    if last_reminder and (now - last_reminder) < timedelta(minutes=RAMPAGE_REMINDER_MINUTES):
+        return
+
+    mins_left = max(1, int((rampage_until - now).total_seconds() // 60))
+    await send_main_chat_message(
+        bot,
+        f"🔥 **CHEF RAMPAGE IS STILL LIVE**\n"
+        f"⏳ **Time left:** {mins_left}m\n"
+        f"⚠️ Snack risk is active (**50/50** for **-{RAMPAGE_SNACK_PENALTY:,} Cal**)\n"
+        f"⚠️ Anyone with heat can be hunted."
+    )
+
+    cur.execute("""
+        UPDATE pf_users
+        SET last_rampage_reminder_at = %s
+        WHERE user_id = 0
+    """, (now,))
+    conn.commit()
+
+async def maybe_send_rampage_end(bot, cur, conn, old_until, now):
+    if not old_until or old_until > now:
+        return
+
+    cur.execute("""
+        SELECT rampage_end_announced_for
+        FROM pf_users
+        WHERE user_id = 0
+    """)
+    row = cur.fetchone()
+    announced_for = row[0] if row else None
+
+    if announced_for == old_until:
+        return
+
+    await send_main_chat_message(
+        bot,
+        "🧊 **CHEF HAS COOLED OFF**\nThe kitchen is no longer in rampage mode.\nFor now."
+    )
+
+    cur.execute("""
+        UPDATE pf_users
+        SET rampage_end_announced_for = %s,
+            last_rampage_reminder_at = NULL
+        WHERE user_id = 0
+    """, (old_until,))
+    conn.commit()
+
 # ==========================================
 # 3. DATABASE INITIALIZATION & MIGRATIONS
 # ==========================================
@@ -275,7 +413,10 @@ def init_db(bot_id=None):
                 lifetime_daily_wins INTEGER DEFAULT 0,
                 lifetime_hack_wins INTEGER DEFAULT 0,
                 heat_level INTEGER DEFAULT 0,
-                rampage_until TIMESTAMP
+                rampage_until TIMESTAMP,
+                last_rage_announce_level INTEGER DEFAULT 0,
+                last_rampage_reminder_at TIMESTAMP,
+                rampage_end_announced_for TIMESTAMP
             );
         """)
 
@@ -290,7 +431,10 @@ def init_db(bot_id=None):
             ("lifetime_daily_wins", "INTEGER DEFAULT 0"),
             ("lifetime_hack_wins", "INTEGER DEFAULT 0"),
             ("heat_level", "INTEGER DEFAULT 0"),
-            ("rampage_until", "TIMESTAMP")
+            ("rampage_until", "TIMESTAMP"),
+            ("last_rage_announce_level", "INTEGER DEFAULT 0"),
+            ("last_rampage_reminder_at", "TIMESTAMP"),
+            ("rampage_end_announced_for", "TIMESTAMP")
         ]
         for col_name, col_type in migrations:
             try:
@@ -373,7 +517,10 @@ async def automated_reset_task(application):
                         is_icu = FALSE,
                         daily_ko_count = 0,
                         heat_level = 0,
-                        rampage_until = NULL
+                        rampage_until = NULL,
+                        last_rage_announce_level = 0,
+                        last_rampage_reminder_at = NULL,
+                        rampage_end_announced_for = NULL
                 """)
 
                 conn.commit()
@@ -402,7 +549,7 @@ async def chef_rampage_task(application):
         try:
             now = datetime.utcnow()
 
-            if LAST_CHEF_HUNT_AT and (now - LAST_CHEF_HUNT_AT) < timedelta(seconds=60):
+            if LAST_CHEF_HUNT_AT and (now - LAST_CHEF_HUNT_AT) < timedelta(minutes=RAMPAGE_HUNT_COOLDOWN_MINUTES):
                 continue
 
             conn = get_db_connection()
@@ -420,13 +567,16 @@ async def chef_rampage_task(application):
             chef_rage = kitchen[0] or 0
             rampage_until = kitchen[1]
 
+            await maybe_send_rampage_end(application.bot, cur, conn, rampage_until, now)
+            await maybe_send_rampage_reminder(application.bot, cur, conn, rampage_until, now)
+
             if not rampage_active_until(rampage_until, now):
                 continue
 
             cur.execute("""
                 SELECT user_id, username, heat_level
                 FROM pf_users
-                WHERE user_id != 0 AND heat_level >= 45
+                WHERE user_id != 0 AND heat_level > 0
                 ORDER BY heat_level DESC, total_calories DESC
                 LIMIT 1
             """)
@@ -436,7 +586,7 @@ async def chef_rampage_task(application):
                 continue
 
             hunted_id, hunted_name, hunted_heat = hunted
-            hunt_damage = 1500
+            hunt_damage = RAMPAGE_HUNT_DAMAGE
             new_heat = max(0, (hunted_heat or 0) - 30)
 
             cur.execute("""
@@ -452,21 +602,20 @@ async def chef_rampage_task(application):
 
             try:
                 mins_left = max(1, int((rampage_until - now).total_seconds() // 60))
-                await application.bot.send_message(
-                    chat_id=hunted_id,
-                    text=(
-                        f"👨‍🍳 **CHEF HUNT!** The kitchen found you during rampage.\n"
-                        f"💥 **-1,500 Cal**\n"
+                await send_main_chat_message(
+                    application.bot,
+                    (
+                        f"👨‍🍳 **CHEF HUNT!** @{escape_name(hunted_name)} got caught during rampage.\n"
+                        f"💥 **-{hunt_damage:,} Cal**\n"
                         f"🌡️ Heat burned down to **{new_heat}**\n"
                         f"🔥 Rampage still live: **{mins_left}m**\n"
                         f"🎤 *{random_charlie_quote()}*"
-                    ),
-                    parse_mode='Markdown'
+                    )
                 )
             except (Forbidden, BadRequest):
                 pass
             except Exception as dm_err:
-                logger.warning(f"Chef hunt DM failed: {dm_err}")
+                logger.warning(f"Chef hunt send failed: {dm_err}")
 
             logger.info(f"👨‍🍳 Passive Chef Hunt hit user_id={hunted_id} heat={hunted_heat} -> {new_heat}")
         except Exception as e:
@@ -513,25 +662,38 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if rampage_live:
             if random.random() < 0.50:
+                ended_rampage = False
+
                 cur.execute("""
                     UPDATE pf_users
-                    SET daily_calories = GREATEST(0, daily_calories - 2000),
-                        total_calories = GREATEST(0, total_calories - 2000),
+                    SET daily_calories = GREATEST(0, daily_calories - %s),
+                        total_calories = GREATEST(0, total_calories - %s),
                         last_snack = %s
                     WHERE user_id = %s
-                """, (now, user.id))
+                """, (RAMPAGE_SNACK_PENALTY, RAMPAGE_SNACK_PENALTY, now, user.id))
 
                 if random.random() < 0.25:
                     cur.execute("""
                         UPDATE pf_users
                         SET daily_calories = 0,
-                            rampage_until = NULL
+                            rampage_until = NULL,
+                            last_rampage_reminder_at = NULL,
+                            rampage_end_announced_for = NULL
                         WHERE user_id = 0
                     """)
+                    ended_rampage = True
+
                 conn.commit()
+
+                if ended_rampage:
+                    await send_main_chat_message(
+                        context.bot,
+                        "🧊 **CHEF HAS COOLED OFF**\nThe kitchen is no longer in rampage mode.\nFor now."
+                    )
+
                 return await update.message.reply_text(
                     f"🔥 **RAMPAGE MODE!**\n"
-                    f"💀 The Chef caught you slippin! **-2,000 Cal**\n"
+                    f"💀 The Chef caught you slippin! **-{RAMPAGE_SNACK_PENALTY:,} Cal**\n"
                     f"🎤 *{random_charlie_quote()}*",
                     parse_mode='Markdown'
                 )
@@ -749,40 +911,48 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
 
+        rage_gain = random.randint(5, 15)
         cur.execute("""
             UPDATE pf_users
-            SET daily_calories = daily_calories + 5
+            SET daily_calories = daily_calories + %s
             WHERE user_id = 0
             RETURNING daily_calories, rampage_until
-        """)
+        """, (rage_gain,))
         chef_state = cur.fetchone()
         chef_rage = chef_state[0] if chef_state and chef_state[0] else 0
         current_rampage_until = chef_state[1] if chef_state else None
+        await maybe_announce_rage(context.bot, cur, conn, chef_rage)
 
         if kitchen_target:
+            kitchen_heat_gain = random.randint(5, 25)
+            kitchen_bonus_rage = 15
+
             cur.execute("""
                 UPDATE pf_users
                 SET daily_calories = GREATEST(0, daily_calories - 2000),
                     total_calories = GREATEST(0, total_calories - 2000),
-                    heat_level = heat_level + 15
+                    heat_level = heat_level + %s
                 WHERE user_id = %s
-            """, (attacker.id,))
+            """, (kitchen_heat_gain, attacker.id))
 
             cur.execute("""
                 UPDATE pf_users
-                SET daily_calories = daily_calories + 15
+                SET daily_calories = daily_calories + %s
                 WHERE user_id = 0
                 RETURNING daily_calories, rampage_until
-            """)
+            """, (kitchen_bonus_rage,))
             chef_state = cur.fetchone()
             chef_rage = chef_state[0] if chef_state and chef_state[0] else 0
             current_rampage_until = chef_state[1] if chef_state else None
+            await maybe_announce_rage(context.bot, cur, conn, chef_rage)
 
             if chef_rage >= 100 and not rampage_active_until(current_rampage_until, now):
-                new_rampage_until = now + timedelta(minutes=15)
+                new_rampage_until = now + timedelta(hours=1)
                 cur.execute("""
                     UPDATE pf_users
-                    SET rampage_until = %s
+                    SET rampage_until = %s,
+                        last_rampage_reminder_at = NULL,
+                        rampage_end_announced_for = NULL
                     WHERE user_id = 0
                 """, (new_rampage_until,))
                 current_rampage_until = new_rampage_until
@@ -792,7 +962,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = (
                 f"👨‍🍳 **CHEF SMACK-BACK!** You slapped the kitchen and got folded.\n"
                 f"💥 **-2,000 Cal**\n"
-                f"🌡️ **Heat +15**\n"
+                f"🌡️ **Heat +{kitchen_heat_gain}**\n"
                 f"🔥 **CHEF RAGE:** {chef_rage}/100\n"
             )
             if rampage_active_until(current_rampage_until, now):
@@ -834,27 +1004,30 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         if chef_rage >= 100 and not rampage_active_until(current_rampage_until, now):
-            new_rampage_until = now + timedelta(minutes=15)
+            new_rampage_until = now + timedelta(hours=1)
             cur.execute("""
                 UPDATE pf_users
-                SET rampage_until = %s
+                SET rampage_until = %s,
+                    last_rampage_reminder_at = NULL,
+                    rampage_end_announced_for = NULL
                 WHERE user_id = 0
             """, (new_rampage_until,))
             current_rampage_until = new_rampage_until
 
         if chef_rage > 50 and random.random() < 0.30:
+            counter_heat_gain = random.randint(5, 25)
             cur.execute("""
                 UPDATE pf_users
                 SET daily_calories = GREATEST(0, daily_calories - 1500),
                     total_calories = GREATEST(0, total_calories - 1500),
-                    heat_level = heat_level + 15
+                    heat_level = heat_level + %s
                 WHERE user_id = %s
-            """, (attacker.id,))
+            """, (counter_heat_gain, attacker.id))
             conn.commit()
             return await update.message.reply_text(
                 f"👨‍🍳 **COUNTER-SLAP!** The Chef wasn't having it.\n"
                 f"💥 **-1,500 Cal**\n"
-                f"🌡️ **Heat +15**\n"
+                f"🌡️ **Heat +{counter_heat_gain}**\n"
                 f"🎤 *{random_charlie_quote()}*",
                 parse_mode='Markdown'
             )
@@ -862,14 +1035,15 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         s_count += 1
         s_list.append(str(attacker.id))
         new_s_ids = ",".join(s_list)
+        smack_heat_gain = random.randint(5, 25)
 
         cur.execute("""
             UPDATE pf_users
             SET daily_calories = GREATEST(0, daily_calories - 200),
                 total_calories = GREATEST(0, total_calories - 200),
-                heat_level = heat_level + 15
+                heat_level = heat_level + %s
             WHERE user_id = %s
-        """, (attacker.id,))
+        """, (smack_heat_gain, attacker.id))
 
         if s_count >= 5:
             cur.execute("""
@@ -899,7 +1073,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🥊 **SMACKED!** @{escape_name(target.username or target.first_name)}\n"
                 f"{bar} ({s_count}/5)\n"
                 f"@{escape_name(attacker.username or attacker.first_name)} spent 200 Cal.\n"
-                f"🌡️ Heat +15\n"
+                f"🌡️ Heat +{smack_heat_gain}\n"
             )
 
         if rampage_active_until(current_rampage_until, now):
