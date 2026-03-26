@@ -221,9 +221,6 @@ def ensure_user_id_record(cur, user_id, username="Unknown"):
         ON CONFLICT (user_id) DO NOTHING
     """, (user_id, username))
 
-def roll_bullish_moon():
-    return random.random() < 0.01
-
 def rampage_active_until(rampage_until, now=None):
     now = now or datetime.utcnow()
     return bool(rampage_until and rampage_until > now)
@@ -553,7 +550,8 @@ async def snack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gif_url = item.get('gif')
         bullish_moon = False
 
-        if roll_bullish_moon():
+        # True independent 1% jackpot roll
+        if random.random() < 0.01:
             cal_val = 10000
             bullish_moon = True
 
@@ -925,16 +923,7 @@ async def smack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender, now = update.effective_user, datetime.utcnow()
-
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("💡 You must **REPLY** to a message with /gift!")
-
-    receiver = update.message.reply_to_message.from_user
-    if receiver.id == sender.id:
-        return await update.message.reply_text("🚫 Self-gifting is prohibited.")
-
-    is_golden_hour = now.hour == 0
-    cooldown_minutes = 20 if is_founder(sender) else 60
+    receiver = None
 
     conn = None
     cur = None
@@ -942,7 +931,46 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db_connection()
         cur = conn.cursor()
         ensure_user_record(cur, sender)
-        ensure_user_record(cur, receiver)
+
+        # 1) Direct gifting via /gift @username
+        if context.args:
+            target_username = context.args[0].strip().lstrip("@")
+            cur.execute("""
+                SELECT user_id, username
+                FROM pf_users
+                WHERE LOWER(username) = LOWER(%s) OR LOWER(username) = LOWER(%s)
+                LIMIT 1
+            """, (target_username, f"@{target_username}"))
+            row = cur.fetchone()
+
+            if not row:
+                return await update.message.reply_text(
+                    f"❌ @{target_username} not found in the lab database."
+                )
+
+            receiver = type('GiftTarget', (object,), {
+                'id': row[0],
+                'username': row[1] or target_username,
+                'first_name': row[1] or target_username
+            })
+
+        # 2) Fallback to reply gifting
+        elif update.message.reply_to_message:
+            receiver = update.message.reply_to_message.from_user
+            ensure_user_record(cur, receiver)
+
+        # 3) Neither provided
+        else:
+            return await update.message.reply_text(
+                "💡 Use `/gift @username` or reply to a message with `/gift`.",
+                parse_mode='Markdown'
+            )
+
+        if receiver.id == sender.id:
+            return await update.message.reply_text("🚫 Self-gifting is prohibited.")
+
+        is_golden_hour = now.hour == 0
+        cooldown_minutes = 20 if is_founder(sender) else 60
 
         cur.execute("SELECT last_gift_sent FROM pf_users WHERE user_id = %s", (sender.id,))
         res = cur.fetchone()
@@ -995,6 +1023,8 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.commit()
                 return await update.message.reply_text(f"✅ **CHEF FED.**\n{get_progress_bar(cur_val)}")
 
+        ensure_user_id_record(cur, receiver.id, receiver.username or receiver.first_name or "Unknown")
+
         cur.execute("SELECT id FROM pf_gifts WHERE receiver_id = %s AND is_opened = FALSE", (receiver.id,))
         if cur.fetchone():
             return await update.message.reply_text("📦 **DOCK BLOCKED:** Shipment pending. Cooldown saved.")
@@ -1024,14 +1054,23 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("""
             INSERT INTO pf_gifts (sender_id, sender_name, receiver_id, item_name, item_type, value, flavor_text)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (sender.id, sender.first_name, receiver.id, item['name'], i_type, val, msg))
+        """, (
+            sender.id,
+            sender.first_name,
+            receiver.id,
+            item['name'],
+            i_type,
+            val,
+            msg
+        ))
 
         conn.commit()
         await update.message.reply_text(
             f"{gh_tag}📦 MYSTERY SHIPMENT DROPPED!\n"
             f"@{receiver.username or receiver.first_name}, choose your fate:\n"
             f"/open\n"
-            f"/trash"
+            f"/trash",
+            parse_mode='Markdown'
         )
 
     except Exception as e:
@@ -1479,7 +1518,7 @@ async def set_bot_commands(application):
         ("snack", "Eat"),
         ("hack", "Lab"),
         ("smack", "Raid [Reply/Tag]"),
-        ("gift", "Shipment [Reply]"),
+        ("gift", "Shipment [Reply/Tag]"),
         ("open", "Unbox"),
         ("trash", "Dump"),
         ("status", "Vitals"),
