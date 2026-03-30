@@ -520,7 +520,9 @@ async def automated_reset_task(application):
                         rampage_until = NULL,
                         last_rage_announce_level = 0,
                         last_rampage_reminder_at = NULL,
-                        rampage_end_announced_for = NULL
+                        rampage_end_announced_for = NULL,
+                        last_snack = NULL,
+                        last_hack = NULL
                 """)
 
                 conn.commit()
