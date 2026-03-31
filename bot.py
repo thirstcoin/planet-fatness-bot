@@ -52,6 +52,9 @@ RAMPAGE_REMINDER_MINUTES = 15
 # passive hunt cooldown memory
 LAST_CHEF_HUNT_AT = None
 
+# users hidden from all public leaderboard displays
+REMOVED_LEADERBOARD_USERS = ("pop_polo", "dooragricky")
+
 # ==========================================
 # 2. DATA LOADING & HELPERS
 # ==========================================
@@ -416,7 +419,8 @@ def init_db(bot_id=None):
                 rampage_until TIMESTAMP,
                 last_rage_announce_level INTEGER DEFAULT 0,
                 last_rampage_reminder_at TIMESTAMP,
-                rampage_end_announced_for TIMESTAMP
+                rampage_end_announced_for TIMESTAMP,
+                leaderboard_enabled BOOLEAN DEFAULT TRUE
             );
         """)
 
@@ -434,7 +438,8 @@ def init_db(bot_id=None):
             ("rampage_until", "TIMESTAMP"),
             ("last_rage_announce_level", "INTEGER DEFAULT 0"),
             ("last_rampage_reminder_at", "TIMESTAMP"),
-            ("rampage_end_announced_for", "TIMESTAMP")
+            ("rampage_end_announced_for", "TIMESTAMP"),
+            ("leaderboard_enabled", "BOOLEAN DEFAULT TRUE")
         ]
         for col_name, col_type in migrations:
             try:
@@ -448,6 +453,12 @@ def init_db(bot_id=None):
             VALUES (0, 'KITCHEN_SYSTEM', 0, 0)
             ON CONFLICT (user_id) DO NOTHING
         """)
+
+        cur.execute("""
+            UPDATE pf_users
+            SET leaderboard_enabled = FALSE
+            WHERE LOWER(REPLACE(COALESCE(username, ''), '@', '')) IN (%s, %s)
+        """, REMOVED_LEADERBOARD_USERS)
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pf_airdrop_winners (
@@ -498,7 +509,15 @@ async def automated_reset_task(application):
                 cur = conn.cursor()
 
                 for label, col in [('DAILY PHATTEST', 'daily_calories'), ('TOP HACKER', 'daily_clog')]:
-                    cur.execute(f"SELECT user_id, username, {col} FROM pf_users WHERE user_id != 0 AND {col} > 0 ORDER BY {col} DESC LIMIT 1")
+                    cur.execute(f"""
+                        SELECT user_id, username, {col}
+                        FROM pf_users
+                        WHERE user_id != 0
+                          AND {col} > 0
+                          AND COALESCE(leaderboard_enabled, TRUE) = TRUE
+                        ORDER BY {col} DESC
+                        LIMIT 1
+                    """)
                     winner = cur.fetchone()
                     if winner:
                         w_id, w_name, w_score = winner
@@ -1418,6 +1437,8 @@ async def halloffame(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT username, lifetime_daily_wins
             FROM pf_users
             WHERE lifetime_daily_wins > 0
+              AND user_id != 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY lifetime_daily_wins DESC
             LIMIT 10
         """)
@@ -1427,6 +1448,8 @@ async def halloffame(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT username, lifetime_hack_wins
             FROM pf_users
             WHERE lifetime_hack_wins > 0
+              AND user_id != 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY lifetime_hack_wins DESC
             LIMIT 10
         """)
@@ -1461,7 +1484,9 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("""
             SELECT username, daily_calories
             FROM pf_users
-            WHERE user_id != 0 AND daily_calories != 0
+            WHERE user_id != 0
+              AND daily_calories != 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY daily_calories DESC
             LIMIT 20
         """)
@@ -1488,6 +1513,7 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             SELECT username, total_calories
             FROM pf_users
             WHERE user_id != 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY total_calories DESC
             LIMIT 20
         """)
@@ -1511,7 +1537,9 @@ async def clogboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("""
             SELECT username, CAST(daily_clog AS FLOAT)
             FROM pf_users
-            WHERE user_id != 0 AND daily_clog > 0
+            WHERE user_id != 0
+              AND daily_clog > 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY daily_clog DESC
             LIMIT 20
         """)
@@ -1537,7 +1565,9 @@ async def deaths(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("""
             SELECT username, icu_lifetime
             FROM pf_users
-            WHERE user_id != 0 AND icu_lifetime > 0
+            WHERE user_id != 0
+              AND icu_lifetime > 0
+              AND COALESCE(leaderboard_enabled, TRUE) = TRUE
             ORDER BY icu_lifetime DESC
             LIMIT 20
         """)
