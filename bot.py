@@ -58,12 +58,14 @@ REMOVED_LEADERBOARD_USERS = ("pop_polo", "dooragricky")
 # ==========================================
 # 2. DATA LOADING & HELPERS
 # ==========================================
-foods, hacks = [], []
+foods, hacks, punishments = [], [], []
 try:
     with open("foods.json", "r") as f:
         foods = json.load(f)
     with open("hacks.json", "r") as f:
         hacks = json.load(f)
+    with open("gift_punishments.json", "r") as f:
+        punishments = json.load(f)
 except Exception as e:
     logger.error(f"❌ JSON Load Failed: {e}")
 
@@ -198,6 +200,43 @@ def get_win_title(wins, is_hacker=False):
 
 def random_charlie_quote():
     return random.choice(CHARLIE_QUOTES)
+
+def roll_punishment():
+    if not punishments:
+        return None
+
+    total_weight = sum(int(p.get("weight", 1)) for p in punishments)
+    if total_weight <= 0:
+        return None
+
+    r = random.uniform(0, total_weight)
+    upto = 0
+
+    for p in punishments:
+        w = int(p.get("weight", 1))
+        if upto + w >= r:
+            low = int(p.get("min", -1000))
+            high = int(p.get("max", -500))
+            if low > high:
+                low, high = high, low
+            value = random.randint(low, high)
+            return {
+                "name": p.get("name", "Cursed Delivery"),
+                "value": value,
+                "text": p.get("text", "Something went horribly wrong.")
+            }
+        upto += w
+
+    p = punishments[-1]
+    low = int(p.get("min", -1000))
+    high = int(p.get("max", -500))
+    if low > high:
+        low, high = high, low
+    return {
+        "name": p.get("name", "Cursed Delivery"),
+        "value": random.randint(low, high),
+        "text": p.get("text", "Something went horribly wrong.")
+    }
 
 def is_founder(user):
     return bool(user and user.username and user.username.lower() == "tikotaco")
@@ -1235,11 +1274,20 @@ async def gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = "Golden Hour Nutrition!"
         else:
             is_p = random.choice([True, False])
+
             if is_p:
-                item = random.choice(hacks)
-                val = random.randint(-2500, -800)
-                i_type = "POISON"
-                msg = f"Toxin Level: {item.get('blueprint', 'Experimental Sludge.')}"
+                curse = roll_punishment()
+
+                if curse:
+                    item = {"name": curse["name"]}
+                    val = curse["value"]
+                    i_type = "CURSED"
+                    msg = curse["text"]
+                else:
+                    item = random.choice(hacks) if hacks else {"name": "Experimental Sludge", "blueprint": "Something went wrong."}
+                    val = random.randint(-2500, -800)
+                    i_type = "POISON"
+                    msg = f"Toxin Level: {item.get('blueprint', 'Experimental Sludge.')}"
             else:
                 item = random.choice(foods)
                 val = item.get('calories', 500)
@@ -1315,7 +1363,13 @@ async def open_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
 
         sign = "+" if val > 0 else ""
-        header = "💉 **FUEL INJECTED!**" if i_type == "PROTEIN" else "💀 **TOXIN DETECTED!**"
+        if i_type == "PROTEIN":
+            header = "💉 **FUEL INJECTED!**"
+        elif i_type == "CURSED":
+            header = "🧪 **CURSED DELIVERY!**"
+        else:
+            header = "💀 **TOXIN DETECTED!**"
+
         await update.message.reply_text(
             f"{header}\nFrom **{escape_name(s_name)}**: {i_name}\n📊 Impact: {sign}{val:,} Cal",
             parse_mode='Markdown'
